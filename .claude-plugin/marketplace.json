@@ -1,0 +1,5 @@
+{
+  "name": "claude-jev-mods",
+  "owner": { "name": "claude-jev-mods" },
+  "plugins": [{ "name": "jev", "source": "./jev" }]
+}

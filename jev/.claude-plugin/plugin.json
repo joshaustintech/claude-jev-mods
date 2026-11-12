@@ -1,0 +1,6 @@
+{
+  "name": "jev",
+  "version": "0.1.0",
+  "description": "Routes models and guards credential and off-task source reads with Jev decisions over OpenRouter, and shows the counts and spend above the prompt.",
+  "types": "./types/index.d.ts"
+}
