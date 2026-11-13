@@ -463,29 +463,30 @@ export const register: Register = on => {
     const active = await activeOf($)
     const ledger = await read($, LEDGER)
     const view = viewOf(active.kind === 'some' ? wake(ledger) : sleep(ledger))
-    // Theme keys only, so the band follows the person's theme.
+    // Theme keys only, so the band follows the person's theme. Every cell is
+    // mono with tabular digits, so the table's columns line up on every surface.
     const draw = (segment: Segment) => {
       switch (segment.tone) {
         case 'alarm':
           return (
-            <Text color="error" weight="semibold">
+            <Text mono tabular color="error" weight="semibold">
               {segment.text}
             </Text>
           )
         case 'warn':
           return (
-            <Text color="warning" weight="semibold">
+            <Text mono tabular color="warning" weight="semibold">
               {segment.text}
             </Text>
           )
         case 'good':
-          return <Text color="success">{segment.text}</Text>
+          return <Text mono tabular color="success">{segment.text}</Text>
         case 'strong':
-          return <Text weight="semibold">{segment.text}</Text>
+          return <Text mono tabular weight="semibold">{segment.text}</Text>
         case 'quiet':
-          return <Text color="subtle">{segment.text}</Text>
+          return <Text mono tabular color="subtle">{segment.text}</Text>
         case 'plain':
-          return <Text>{segment.text}</Text>
+          return <Text mono tabular>{segment.text}</Text>
         default:
           return absurd(segment.tone)
       }

@@ -635,7 +635,12 @@ test('the band shows the red indicator only when dormant, the counters only when
   expect(textOf(dormant)).toBe('● OPENROUTER_API_KEY missing · JEV routing and guards are off')
   expect(rowsOf(active).flat().map(segment => segment.tone)).not.toContain('alarm')
   // Nothing spent yet: no Claude row at all, and Jev's own.
-  expect(textOf(active)).toBe('● JEV  blocked  creds 0 · off-task 0 · wide 0\nJEV  0 tok $0.0000')
+  expect(textOf(active).split('\n')).toEqual([
+    '● ACTIVE  blocked  creds 0 · off-task 0 · wide 0',
+    // Jev alone fills only the input columns, so only those are headed.
+    '     in     in $',
+    'JEV   0  $0.0000',
+  ])
 })
 
 const used = (fresh: number, cacheRead: number, cacheWrite: number, output: number) =>
@@ -702,22 +707,31 @@ test('usage is kept per model, in the order models were first used', () => {
   expect(active.claude.map(spend => spend.model)).toEqual(['claude-fable-5-2', 'claude-sonnet-5-5', 'claude-haiku-5-5'])
   expect(active.claude[0]?.usage.output).toBe(20_000)
 
-  // A model with nothing spent is not shown; each row is in, in $, out, out $,
-  // its columns lined up with the other models' and its name with Jev's.
-  const rows = [
-    'Fable 5.2   in 1.01M   $0.31   out 20.0k $0.80',
-    'Sonnet 5.5  in   500 $0.0010   out   100 $0.0010',
+  // A model with nothing spent is not shown. The rest form a table under one
+  // header (in, in $, out, out $): names flush left, figures flush right.
+  const table = [
+    '               in     in $    out    out $',
+    'Fable 5.2   1.01M    $0.31  20.0k    $0.80',
+    'Sonnet 5.5    500  $0.0010    100  $0.0010',
   ]
   expect(textOf(viewOf(active)).split('\n')).toEqual([
-    '● JEV  blocked  creds 0 · off-task 0 · wide 0',
-    ...rows,
-    'JEV         0 tok $0.0000',
+    '● ACTIVE  blocked  creds 0 · off-task 0 · wide 0',
+    ...table,
+    'JEV             0  $0.0000',
   ])
   expect(textOf(viewOf(dormant)).split('\n')).toEqual([
     '● OPENROUTER_API_KEY missing · JEV routing and guards are off',
-    ...rows,
+    ...table,
   ])
-  expect(textOf(viewOf(addClaude(INITIAL, 'claude-next-9', used(10, 0, 0, 2))))).toContain(
-    'claude-next-9  in 10 n/a   out 2 n/a',
-  )
+  expect(textOf(viewOf(addClaude(INITIAL, 'claude-next-9', used(10, 0, 0, 2)))).split('\n')).toEqual([
+    '● OPENROUTER_API_KEY missing · JEV routing and guards are off',
+    '               in  in $  out  out $',
+    'claude-next-9  10   n/a    2    n/a',
+  ])
+  // Every row of the table is as wide as its header.
+  const widths = textOf(viewOf(active))
+    .split('\n')
+    .slice(1, 4)
+    .map(row => row.length)
+  expect(new Set(widths).size).toBe(1)
 })

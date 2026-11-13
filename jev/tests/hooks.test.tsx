@@ -456,7 +456,8 @@ test('Claude usage is shown per model, in then out, and unused models are not', 
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   const before = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await before.find({ type: 'Text', text: /Fable|Sonnet| in / })).toBeUndefined()
+  expect(await before.find({ type: 'Text', text: /Fable|Sonnet/ })).toBeUndefined()
+  expect((await before.find({ type: 'Text', text: 'ACTIVE' }))?.props.weight).toBe('semibold')
   await before.unmount()
 
   await $.turn.complete(finished('t1', 'claude-fable-5-2', 2000, 1000))
@@ -470,10 +471,11 @@ test('Claude usage is shown per model, in then out, and unused models are not', 
   await ui.unmount()
 
   const status = await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
-  expect((status.text ?? "").split('\n').slice(1, 4)).toEqual([
-    'Fable 5.2   in 2.0k   $0.02   out 1.3k $0.05',
-    'Sonnet 5.5  in 3.0k $0.0060   out  500 $0.0050',
-    'JEV         0 tok $0.0000',
+  expect((status.text ?? "").split('\n').slice(1, 5)).toEqual([
+    '              in     in $   out    out $',
+    'Fable 5.2   2.0k    $0.02  1.3k    $0.05',
+    'Sonnet 5.5  3.0k  $0.0060   500  $0.0050',
+    'JEV            0  $0.0000',
   ])
 })
 
@@ -519,5 +521,5 @@ test('subagents get a tier and a Haiku brief, and wait when they depend on runni
 
   // Each Haiku brief (50 in, 20 out) is Claude spend, filed under Haiku.
   const status = await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
-  expect(status.text).toContain('Haiku 5.5  in 100 $0.0000   out 40 $0.0000')
+  expect(status.text).toContain('Haiku 5.5   100  $0.0000   40  $0.0000')
 })
