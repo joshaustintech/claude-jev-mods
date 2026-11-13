@@ -60,7 +60,7 @@ const statusRow = (blocks: Blocks): Row => [
 
 const ALARM: Row = [
   { tone: 'alarm', text: '● OPENROUTER_API_KEY missing' },
-  quiet(' · JEV routing and guards are off'),
+  quiet(' · JEV guards are off'),
 ]
 
 // ---------------------------------------------------------------- table

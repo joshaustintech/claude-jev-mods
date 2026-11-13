@@ -234,22 +234,7 @@ export type Decision =
           }
     }
 
-// ---------------------------------------------------------------- routing
-
-export type Tier = 'opus' | 'sonnet' | 'haiku'
-export type Work = 'plan_or_review' | 'medium_coding' | 'defined_task'
-
-export type Route = {
-  readonly tier: Tier
-  readonly why:
-    | { readonly kind: 'first-turn' }
-    | { readonly kind: 'jev'; readonly work: Work; readonly p: Probability }
-    | { readonly kind: 'fallback'; readonly cause: 'no-fit' | 'unsure' | JevError['kind'] }
-}
-
-export type Brief =
-  | { readonly kind: 'meta'; readonly text: string; readonly original: string }
-  | { readonly kind: 'original'; readonly text: string }
+// ---------------------------------------------------------------- subagents
 
 /** A subagent this session admitted: starting until the engine names it. */
 export type Admitted = {
@@ -259,10 +244,6 @@ export type Admitted = {
   readonly at: number
   readonly agent: Option<string>
 }
-
-export type Spawn =
-  | { readonly kind: 'start'; readonly tier: Tier; readonly route: Route }
-  | { readonly kind: 'wait'; readonly behind: NonEmpty<string> }
 
 // ---------------------------------------------------------------- session
 
@@ -278,10 +259,9 @@ export type JevSpend = {
   readonly precision: 'exact' | 'estimated'
 }
 
-/** What the guard and the router know of the work in hand. */
+/** What the guard knows of the work in hand. */
 export type WorkContext = {
   readonly prompts: readonly string[]
-  readonly route: Route
   readonly read: readonly string[]
   readonly allowed: readonly string[]
   readonly admitted: readonly Admitted[]

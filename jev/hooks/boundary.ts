@@ -296,23 +296,6 @@ export const turnUsage = (
 ): Option<{ readonly model: string; readonly used: ClaudeUsage }> =>
   usage === undefined ? none : some({ model: usage.model, used: usageOf(usage) })
 
-export type Completion = { readonly text: string; readonly used: ClaudeUsage }
-
-/** One Haiku completion; none when it did not answer or could not be sent. */
-export async function completeWithHaiku(
-  $: EngineInterface,
-  system: string,
-  prompt: string,
-): Promise<Option<Completion>> {
-  return $.model.complete({ model: 'haiku', system, prompt }).then(
-    (reply): Option<Completion> =>
-      reply.isAnswered && reply.text.trim().length > 0
-        ? some({ text: reply.text, used: usageOf(reply.usage) })
-        : none,
-    (): Option<Completion> => none,
-  )
-}
-
 /** The ids of the subagents that are starting, running or waiting now. */
 export async function liveAgentIds(
   $: EngineInterface,

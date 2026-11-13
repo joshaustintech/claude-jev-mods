@@ -59,13 +59,6 @@ const stage = (on: On, env: Record<string, string>): Stage => {
       value: { kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false, ...(realPath === undefined ? {} : { realPath }) },
     }
   })
-  on('model.complete', () => ({
-    value: {
-      isAnswered: true as const,
-      text: 'Goal: do it.\nScope: here.\nConstraints: none.\nDone when: done.',
-      usage: { input_tokens: 50, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-    },
-  }))
   on('http.fetch', (_, e) => {
     const sent = JSON.parse(String(e.init?.body)) as Sent
     it.sent.push(sent)
@@ -362,28 +355,7 @@ test('with no key a wide search passes untouched and silently', async ($, on) =>
   expect(it.sent.length).toBe(0)
 })
 
-test('prompts are routed: Opus first, then by Jev, with a note on subagent order', async ($, on) => {
-  const it = stage(on, KEY)
-  const status = async () =>
-    (await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })).text
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-
-  it.answers = { work: 'defined_task', fits_a_work_kind: 0.97, subtasks_are_independent: 0.9 }
-  const first = await $.prompt.submit({ text: 'Rename a variable', wait: false, origin: { kind: 'composer' } })
-  expect(await status()).toContain('Main loop route: opus (first turn plans on Opus)')
-  expect(first.context?.join(' ')).toContain('launch them in parallel')
-
-  it.answers = { work: 'medium_coding', fits_a_work_kind: 0.97, subtasks_are_independent: 0.1 }
-  const second = await $.prompt.submit({ text: 'Add pagination to the users endpoint', wait: false, origin: { kind: 'composer' } })
-  expect(await status()).toContain('Main loop route: sonnet (Jev: medium_coding at 0.94)')
-  expect(second.context?.join(' ')).toContain('one at a time')
-
-  it.answers = { work: 'defined_task', fits_a_work_kind: 0.2 }
-  await $.prompt.submit({ text: 'hmm', wait: false, origin: { kind: 'composer' } })
-  expect(await status()).toContain('Main loop route: opus (fallback: no-fit)')
-})
-
-test('each main-loop step runs on the routed tier; a subagent step is left alone', async ($, on) => {
+test('the model picked is kept: prompts and steps are not routed, and Jev is not asked about them', async ($, on) => {
   const it = stage(on, KEY)
   const step = async (agentId?: string) => {
     const stream = $.turn.step({
@@ -399,15 +371,20 @@ test('each main-loop step runs on the routed tier; a subagent step is left alone
     }
   }
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await $.prompt.submit({ text: 'Plan the migration', wait: false, origin: { kind: 'composer' } })
-  await step()
 
-  it.answers = { work: 'medium_coding', fits_a_work_kind: 0.97 }
-  await $.prompt.submit({ text: 'Add pagination to the users endpoint', wait: false, origin: { kind: 'composer' } })
+  const first = await $.prompt.submit({ text: 'Plan the migration', wait: false, origin: { kind: 'composer' } })
+  await step()
+  const second = await $.prompt.submit({ text: 'Rename a variable', wait: false, origin: { kind: 'composer' } })
   await step()
   await step('agent-1')
 
-  expect(it.stepped).toEqual(['opus', 'sonnet', 'claude-fable-5-2'])
+  expect(it.stepped).toEqual(['claude-fable-5-2', 'claude-fable-5-2', 'claude-fable-5-2'])
+  expect(it.sent.length).toBe(0)
+  expect(first.context ?? []).toEqual([])
+  expect(second.context ?? []).toEqual([])
+
+  const status = await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect(status.text ?? '').not.toContain('route')
 })
 
 test('with no key a step keeps its model, and Claude tokens are still tallied', async ($, on) => {
@@ -495,31 +472,34 @@ test('a commit whose message names env reads and secret files is not blocked', a
   expect(JSON.stringify(it.sent.at(-1)?.state)).toContain('process.env')
 })
 
-test('subagents get a tier and a Haiku brief, and wait when they depend on running work', async ($, on) => {
+test('subagents start as asked, beside running ones, and their task informs the relevance check', async ($, on) => {
   const it = stage(on, KEY)
+  let briefs = 0
+  on('model.complete', () => {
+    briefs += 1
+
+    return {
+      value: {
+        isAnswered: false as const,
+        reason: 'aborted' as const,
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    }
+  })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
-  it.answers = { work: 'defined_task', fits_a_work_kind: 0.97 }
-  const first = await $.agent.spawn(SPAWN)
-  expect(first.deny).toBeUndefined()
-  expect(it.spawned[0]?.model).toBe('haiku')
-  expect(it.spawned[0]?.prompt).toContain('Goal: do it.')
-  expect(it.spawned[0]?.prompt).toContain(SPAWN.prompt)
-
-  // The first is still running; the second depends on it.
+  const first = await $.agent.spawn({ ...SPAWN, model: 'claude-fable-5-2' } as never)
   it.live = ['agent-1']
-  it.answers = { work: 'medium_coding', fits_a_work_kind: 0.97, independent_of_running: 0.1 }
   const second = await $.agent.spawn({ ...SPAWN, tool_use_id: 'toolu_2', description: 'Update callers' })
-  expect(second.deny).toContain('Rename getUser')
-  expect(it.spawned.length).toBe(1)
 
-  // Independent work starts beside it, on Sonnet.
-  it.answers = { work: 'medium_coding', fits_a_work_kind: 0.97, independent_of_running: 0.95 }
-  const third = await $.agent.spawn({ ...SPAWN, tool_use_id: 'toolu_3', description: 'Write docs' })
-  expect(third.deny).toBeUndefined()
-  expect(it.spawned[1]?.model).toBe('sonnet')
+  expect(first.deny).toBeUndefined()
+  expect(second.deny).toBeUndefined()
+  expect(it.spawned.map(one => one.prompt)).toEqual([SPAWN.prompt, SPAWN.prompt])
+  expect(it.spawned[0]?.model).toBe('claude-fable-5-2')
+  expect(briefs).toBe(0)
+  expect(it.sent.length).toBe(0)
 
-  // Each Haiku brief (50 in, 20 out) is Claude spend, filed under Haiku.
-  const status = await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
-  expect(status.text).toContain('Haiku 5.5   100  $0.0000   40  $0.0000')
+  // A read by the subagent is judged against the task it was given.
+  await $.tool.call({ tool: 'Read', file_path: '/repo/src/users.ts', agentId: 'agent-1' } as never)
+  expect(JSON.stringify(it.sent.at(-1)?.state)).toContain('Rename getUser to fetchUser')
 })

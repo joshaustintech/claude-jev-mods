@@ -1,4 +1,4 @@
-// The data model on its own: decoding, reading nouls, rules, judging, routing.
+// The data model on its own: decoding, reading nouls, rules, judging, the band.
 // The JSON here is as TypeSafe's docs record Jev's replies.
 
 import { expect, test } from 'claude-code/testing'
@@ -8,11 +8,8 @@ import { rowsOf, textOf } from '../hooks/band'
 import { decodeDecided } from '../hooks/boundary'
 import {
   DEFAULT_BAND,
-  FIRST_ROUTE,
   INITIAL,
-  ROUTE_AT_LEAST,
   SYSTEM_BAND,
-  TIER_MODEL,
   addClaude,
   applyDecision,
   lineOf,
@@ -43,7 +40,8 @@ import {
   scopeOf,
 } from '../hooks/guard'
 import { segmentsOf as shellSegments } from '../hooks/shell'
-import { ROUTE, SPAWN, routeOf, spawnOf } from '../hooks/routing'
+import { choice, noul as noulQuestion } from '../hooks/decisions'
+import { inFlight, taskOf } from '../hooks/agents'
 
 const p = (n: number): Probability => {
   const made = probability(n)
@@ -59,9 +57,19 @@ const noul = (n: number) => ({ type: 'noul', noul: n })
 
 const HOME = some('/Users/x')
 
+/** A choice question, to test decoding: no question set in the mod asks one now. */
+const KIND = {
+  work: choice('What kind of work is `request`?', {
+    plan_or_review: 'Planning or review',
+    medium_coding: 'Implementing code',
+    defined_task: 'A small mechanical task',
+  }),
+  fits_a_work_kind: noulQuestion('Does `request` fit a kind?', 'It fits', 'It does not'),
+  subtasks_are_independent: noulQuestion('Are its parts independent?', 'They are', 'They are not'),
+} as const
+
 const WORK: WorkContext = {
   prompts: ['Fix the login redirect bug'],
-  route: FIRST_ROUTE,
   read: [],
   allowed: [],
   admitted: [],
@@ -93,7 +101,7 @@ test('a recorded noul reply decodes, with its usage', () => {
 
 test('a recorded choice reply decodes with a probability for every option', () => {
   const decided = decodeDecided(
-    ROUTE,
+    KIND,
     {
       answers: {
         work: {
@@ -141,14 +149,14 @@ test('a reply that is not what was asked is malformed, never partly filled', () 
   expect(decodeDecided(CREDENTIAL, 'nonsense', 10).kind).toBe('err')
 
   const stray = decodeDecided(
-    { work: ROUTE.work },
+    { work: KIND.work },
     { answers: { work: { type: 'choice', choice: 'other', probabilities: {} } } },
     10,
   )
   expect(stray).toEqual(err({ kind: 'malformed', at: 'answers.work.choice' }))
 
   const partial = decodeDecided(
-    { work: ROUTE.work },
+    { work: KIND.work },
     {
       answers: {
         work: { type: 'choice', choice: 'defined_task', probabilities: { defined_task: 1 } },
@@ -565,45 +573,15 @@ test('a wide search runs only when the task clearly needs the whole system', () 
   expect(Object.keys(SYSTEM)).toEqual(['needs_system_wide_search'])
 })
 
-const routed = (choice: 'plan_or_review' | 'medium_coding' | 'defined_task', top: number, fits: number) => {
-  const rest = p((1 - top) / 2)
+test('subagents in flight are kept until they end, and their task is found by id', () => {
+  const starting = { toolUseId: 'toolu_1', description: 'A', task: 'Do A', at: 1000, agent: none }
+  const named = { toolUseId: 'toolu_2', description: 'B', task: 'Do B', at: 1000, agent: some('agent-2') }
 
-  return {
-    work: {
-      type: 'choice' as const,
-      choice,
-      probabilities: { plan_or_review: rest, medium_coding: rest, defined_task: rest, [choice]: p(top) },
-    },
-    fits_a_work_kind: { type: 'noul' as const, noul: p(fits) },
-  }
-}
-
-test('a route acts on a likely pick that fits, and plans on Opus otherwise', () => {
-  const route = (...args: Parameters<typeof routed>) =>
-    routeOf(DEFAULT_BAND, ROUTE_AT_LEAST, ok(routed(...args)))
-
-  expect(route('plan_or_review', 0.9, 0.95).tier).toBe('opus')
-  expect(route('medium_coding', 0.9, 0.95).tier).toBe('sonnet')
-  expect(route('defined_task', 0.9, 0.95).tier).toBe('haiku')
-  expect(route('defined_task', 0.6, 0.95)).toEqual({ tier: 'opus', why: { kind: 'fallback', cause: 'unsure' } })
-  // The companion noul: a confident pick means nothing when no option fits.
-  expect(route('defined_task', 0.96, 0.02)).toEqual({ tier: 'opus', why: { kind: 'fallback', cause: 'no-fit' } })
-  expect(routeOf(DEFAULT_BAND, ROUTE_AT_LEAST, err({ kind: 'overloaded' }))).toEqual({
-    tier: 'opus',
-    why: { kind: 'fallback', cause: 'overloaded' },
-  })
-})
-
-test('a subagent starts beside others only on a clear yes that it is independent', () => {
-  const answers = (independent: number) =>
-    ok({ ...routed('medium_coding', 0.9, 0.95), independent_of_running: { type: 'noul' as const, noul: p(independent) } })
-  const busy = some(['Refactor auth'] as const)
-
-  expect(spawnOf(DEFAULT_BAND, ROUTE_AT_LEAST, none, answers(0.05)).kind).toBe('start')
-  expect(spawnOf(DEFAULT_BAND, ROUTE_AT_LEAST, busy, answers(0.9))).toMatchObject({ kind: 'start', tier: 'sonnet' })
-  expect(spawnOf(DEFAULT_BAND, ROUTE_AT_LEAST, busy, answers(0.5))).toEqual({ kind: 'wait', behind: ['Refactor auth'] })
-  expect(spawnOf(DEFAULT_BAND, ROUTE_AT_LEAST, busy, err({ kind: 'transport' })).kind).toBe('wait')
-  expect(Object.keys(SPAWN)).toContain('independent_of_running')
+  expect(inFlight([starting, named], ['agent-2'], 2000)).toEqual([starting, named])
+  expect(inFlight([starting, named], [], 2000)).toEqual([starting])
+  expect(inFlight([starting, named], ['agent-2'], 1000 + 60_000)).toEqual([named])
+  expect(taskOf([starting, named], 'agent-2')).toEqual(some('Do B'))
+  expect(taskOf([starting, named], 'agent-9')).toEqual(none)
 })
 
 test('a deny is counted because it is a deny, and only while active', () => {
@@ -632,7 +610,7 @@ test('the band shows the red indicator only when dormant, the counters only when
   const active = viewOf(wake(INITIAL))
 
   expect(rowsOf(dormant).flat().map(segment => segment.tone)).toContain('alarm')
-  expect(textOf(dormant)).toBe('● OPENROUTER_API_KEY missing · JEV routing and guards are off')
+  expect(textOf(dormant)).toBe('● OPENROUTER_API_KEY missing · JEV guards are off')
   expect(rowsOf(active).flat().map(segment => segment.tone)).not.toContain('alarm')
   // Nothing spent yet: no Claude row at all, and Jev's own.
   expect(textOf(active).split('\n')).toEqual([
@@ -673,7 +651,6 @@ test('a model id is priced and named whatever its spelling', () => {
   expect(named('claude-sonnet-4-6')).toEqual(['Sonnet 4.6', 3, 15])
   expect(named('claude-haiku-5-5')).toEqual(['Haiku 5.5', 0.1, 0.5])
   expect(named('claude-haiku-4-5-20251001')).toEqual(['Haiku 4.5', 1, 5])
-  expect(named(TIER_MODEL.haiku)).toEqual(['Haiku 5.5', 0.1, 0.5])
   expect(named('claude-opus-3-0')).toBe('none')
   expect(named('gpt-5')).toBe('none')
 })
@@ -720,11 +697,11 @@ test('usage is kept per model, in the order models were first used', () => {
     'JEV             0  $0.0000',
   ])
   expect(textOf(viewOf(dormant)).split('\n')).toEqual([
-    '● OPENROUTER_API_KEY missing · JEV routing and guards are off',
+    '● OPENROUTER_API_KEY missing · JEV guards are off',
     ...table,
   ])
   expect(textOf(viewOf(addClaude(INITIAL, 'claude-next-9', used(10, 0, 0, 2)))).split('\n')).toEqual([
-    '● OPENROUTER_API_KEY missing · JEV routing and guards are off',
+    '● OPENROUTER_API_KEY missing · JEV guards are off',
     '               in  in $  out  out $',
     'claude-next-9  10   n/a    2    n/a',
   ])

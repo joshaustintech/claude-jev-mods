@@ -20,8 +20,6 @@ import type {
   Probability,
   Reading,
   Result,
-  Route,
-  Tier,
   Tokens,
   Usage,
   Usd,
@@ -123,9 +121,6 @@ export const SYSTEM_BAND: Band = bandOf(
   nearestProbability(0.6),
 )
 
-/** How likely the chosen option must be before a route acts on it. */
-export const ROUTE_AT_LEAST: Probability = nearestProbability(0.7)
-
 export const readNoul = (band: Band, p: Probability): Reading => {
   if (p >= band.yesAtLeast) {
     return { kind: 'yes', p }
@@ -203,16 +198,6 @@ const addUsage = (a: ClaudeUsage, b: ClaudeUsage): ClaudeUsage => ({
   cacheWrite: addTokens(a.cacheWrite, b.cacheWrite),
   output: addTokens(a.output, b.output),
 })
-
-/**
- * The model each tier alias stands for. Only a Haiku brief needs it: a
- * completion reports no model id, so its use is filed under this one.
- */
-export const TIER_MODEL: Readonly<Record<Tier, string>> = {
-  opus: 'claude-opus-5-5',
-  sonnet: 'claude-sonnet-5-5',
-  haiku: 'claude-haiku-5-5',
-}
 
 type Family = 'fable' | 'mythos' | 'opus' | 'sonnet' | 'haiku'
 type PriceRow = { readonly families: readonly Family[]; readonly version: string; readonly price: Price }
@@ -305,8 +290,6 @@ export const lineOf = (spend: ModelSpend): ModelLine => {
 
 // ---------------------------------------------------------------- ledger
 
-export const FIRST_ROUTE: Route = { tier: 'opus', why: { kind: 'first-turn' } }
-
 const NO_BLOCKS: Blocks = {
   credential: count(0),
   irrelevant: count(0),
@@ -315,7 +298,6 @@ const NO_BLOCKS: Blocks = {
 const NO_SPEND: JevSpend = { tokens: tokens(0), usd: usd(0), precision: 'exact' }
 const NO_WORK: WorkContext = {
   prompts: [],
-  route: FIRST_ROUTE,
   read: [],
   allowed: [],
   admitted: [],

@@ -8,13 +8,12 @@ The mod uses [Jev 1.14](https://openrouter.ai/typesafe/jev-1.14) to make decisio
 
 The mod does these tasks:
 
-- **It selects the model for each prompt.** Planning and review go to Opus. Medium coding goes to Sonnet. Clearly defined tasks go to Haiku. The first prompt of a session always goes to Opus. If Jev is not sure, the prompt goes to Opus.
-- **It selects the model for each subagent.** The mod uses the same rules as for prompts. Haiku also writes a short brief for each subagent.
-- **It controls the order of subagents.** A new subagent starts only if Jev is sure that it does not depend on the subagents that run.
 - **It blocks reads of credentials.** Rules block `.env` files, private keys, credential stores, environment dumps and credential helpers. The rules do not use Jev. Jev examines all other file reads, searches and shell commands.
 - **It blocks reads of source code that is not related to the task.** Jev must be sure that the file is not necessary for the task. The command `/jev allow <path-or-glob>` removes this check for a path.
 - **It blocks searches that are too wide.** A search that starts at `/`, at a top-level folder or above your home folder is blocked. The search continues only if Jev is sure that the task needs a system-wide search.
 - **It shows a band above the prompt.** The band shows the blocks and the token use and cost of each model. Refer to section 5.
+
+The mod does not change the model. Claude Code uses the model that you select, for prompts and for subagents. The mod also does not change when subagents start. Claude Code controls this.
 
 If the OpenRouter key is not set, the mod does none of these tasks. The band then shows a red warning.
 
@@ -26,7 +25,7 @@ If the OpenRouter key is not set, the mod does none of these tasks. The band the
 
 This screenshot shows the band in the Claude Code desktop app. The session that developed this version of the mod is in the screenshot. The screenshot shows the session after a restart and one completed turn.
 
-The table shows an `Opus 5.5` row, but the model picker shows `Fable 5.2`. This is correct. The mod sends the first turn of a session to Opus. The band shows the model that answered, not the model that you selected.
+The table shows an `Opus 5.5` row, but the model picker shows `Fable 5.2`. This screenshot is from version 0.3.0. That version selected the model for each prompt and sent the first turn of a session to Opus. Version 0.4.0 and later versions do not change the model. The table shows the models that answered in the session.
 
 Section 5 shows an example with more models.
 
@@ -141,8 +140,8 @@ All values are for the current session only.
 
 | Item | Meaning |
 | --- | --- |
-| `●` (green) and `ACTIVE` | The mod found the key. The routing and the guards operate. |
-| `● OPENROUTER_API_KEY missing` (red) | The mod did not find the key. The routing and the guards do not operate. The table continues to show the Claude token use. |
+| `●` (green) and `ACTIVE` | The mod found the key. The guards operate. |
+| `● OPENROUTER_API_KEY missing` (red) | The mod did not find the key. The guards do not operate. The table continues to show the Claude token use. |
 | `creds` | The number of calls that the mod blocked because they can read or show credentials. |
 | `off-task` | The number of source code reads that the mod blocked because they are not related to the task. |
 | `wide` | The number of searches that the mod blocked because they started at a folder that is too wide. |
@@ -161,7 +160,7 @@ The table has one row for each Claude model that used tokens in the session. A m
 | `out` | The output tokens. |
 | `out $` | The cost of the output tokens, in US dollars. |
 
-The table counts the main conversation, the subagents and the Haiku briefs.
+The table counts the main conversation and the subagents.
 
 The `JEV` row shows only one total. The total is in the `in` and `in $` columns, because Jev output has no cost. A `~` mark shows an estimate. The mod makes an estimate when OpenRouter does not send the token count.
 
@@ -180,5 +179,5 @@ The token values use these units:
 
 ### 5.4. The `/jev` command
 
-- Type `/jev` to show the same rows as text, with the current model route.
+- Type `/jev` to show the same rows as text, with the paths that you allowed.
 - Type `/jev allow <path-or-glob>` to remove the relevance check for a path in this session. The credential rules continue to apply to that path.

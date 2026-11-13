@@ -24,11 +24,9 @@ import { rowsOf, textOf } from './band'
 import type { Row, Segment } from './band'
 import {
   classify,
-  completeWithHaiku,
   homeDir,
   isGuardedTool,
   liveAgentIds,
-  nonEmpty,
   optional,
   readKey,
   sessionRoot,
@@ -38,10 +36,7 @@ import {
 import { decide } from './decisions'
 import {
   DEFAULT_BAND,
-  FIRST_ROUTE,
   INITIAL,
-  ROUTE_AT_LEAST,
-  TIER_MODEL,
   absurd,
   addClaude,
   addJev,
@@ -49,7 +44,6 @@ import {
   clip,
   mapResult,
   none,
-  readNoul,
   remember,
   sleep,
   some,
@@ -68,26 +62,10 @@ import {
   ruleForAll,
   scopeOf,
 } from './guard'
-import {
-  BRIEF_SYSTEM,
-  ROUTE,
-  SPAWN,
-  briefOf,
-  briefRequest,
-  briefText,
-  concurrencyNote,
-  describeRoute,
-  inFlight,
-  routeOf,
-  routeState,
-  spawnOf,
-  spawnState,
-  taskOf,
-  waitText,
-} from './routing'
+import { inFlight, taskOf } from './agents'
 
 const LEDGER = atom({ plugin: 'jev', key: 'ledger' } as const, INITIAL, {
-  shape: 'ledger-3',
+  shape: 'ledger-4',
 })
 
 /** The key, or nothing: the one test of whether the mod does anything. */
@@ -162,18 +140,12 @@ async function verdictOf(
   }
 }
 
-const withoutSpawn = (ledger: Ledger, toolUseId: string): Ledger =>
-  withWork(ledger, work => ({
-    ...work,
-    admitted: work.admitted.filter(one => one.toolUseId !== toolUseId),
-  }))
-
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'jev',
       description:
-        'Show JEV routing and guard status, or allow a path past the relevance check',
+        'Show JEV guard status, or allow a path past the relevance check',
       argumentHint: '[allow <path-or-glob>]',
     })
     const active = await activeOf($)
@@ -184,7 +156,10 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // ------------------------------------------------------------ routing
+  // ------------------------------------------------------------ work
+  // The prompts and subagent tasks are kept only as context for the
+  // relevance check. The model, the prompt and the order of subagents are
+  // the user's and the engine's: they pass on as they came.
 
   on('prompt.submit', async ($, e, next) => {
     const active = await activeOf($)
@@ -197,161 +172,55 @@ export const register: Register = on => {
 
     const isTyped =
       optional(e.command).kind === 'none' && optional(e.isMeta).kind === 'none'
-
-    if (!isTyped) {
-      await update($, LEDGER, wake)
-
-      return next(e)
-    }
-
-    const earlier = wake(await read($, LEDGER)).work.prompts
-    const outcome = await decide(
-      $,
-      active.value,
-      routeState(e.text, earlier),
-      ROUTE,
-    )
-    const route =
-      earlier.length === 0
-        ? FIRST_ROUTE
-        : routeOf(
-            DEFAULT_BAND,
-            ROUTE_AT_LEAST,
-            mapResult(outcome, decided => decided.answers),
-          )
     await update($, LEDGER, ledger =>
-      withWork(pay(wake(ledger), spendIn(outcome)), work => ({
-        ...work,
-        prompts: [...work.prompts, clip(e.text, 2000)].slice(-3),
-        route,
-      })),
+      isTyped
+        ? withWork(wake(ledger), work => ({
+            ...work,
+            prompts: [...work.prompts, clip(e.text, 2000)].slice(-3),
+          }))
+        : wake(ledger),
     )
 
-    const given = optional(e.context)
-    const notes =
-      outcome.kind === 'ok'
-        ? [
-            concurrencyNote(
-              readNoul(
-                DEFAULT_BAND,
-                outcome.value.answers.subtasks_are_independent.noul,
-              ),
-            ),
-          ]
-        : []
-
-    return next({
-      ...e,
-      context: [...(given.kind === 'some' ? given.value : []), ...notes],
-    })
+    return next(e)
   }).catch(($, e, next) => next(e))
-
-  on('turn.step', async function* ($, e, next) {
-    const ledger = await read($, LEDGER)
-    const isMainLoop = optional(e.agentId).kind === 'none'
-
-    if (ledger.kind === 'active' && isMainLoop) {
-      return yield* next({ ...e, model: ledger.work.route.tier })
-    }
-
-    return yield* next(e)
-  })
 
   on('agent.spawn', async ($, e, next) => {
-    const active = await activeOf($)
-    const isOrdinary =
-      !e.fork &&
-      optional(e.resume).kind === 'none' &&
-      optional(e.workflow).kind === 'none'
+    const started = await next(e)
+    const agent = spawnedAgent(started)
 
-    if (active.kind === 'none' || !isOrdinary) {
-      return next(e)
+    if (agent.kind === 'none' || (await activeOf($)).kind === 'none') {
+      return started
     }
 
-    const now = await $.clock.now()
-    const live = await liveAgentIds($)
-    const mine: Admitted = {
-      toolUseId: e.tool_use_id,
-      description: e.description,
-      task: clip(e.prompt, 4000),
-      at: now,
-      agent: none,
-    }
-    // Joining the list is one atomic write, so of two spawns made together
-    // exactly one sees the other ahead of it.
-    const joined = await update($, LEDGER, ledger =>
-      withWork(wake(ledger), work => ({
-        ...work,
-        admitted: [
-          ...inFlight(work.admitted, live, now).filter(
-            one => one.toolUseId !== mine.toolUseId,
-          ),
-          mine,
-        ],
-      })),
-    )
-    const ahead = wake(joined).work.admitted.filter(
-      one => one.toolUseId !== mine.toolUseId,
-    )
-    const outcome = await decide(
-      $,
-      active.value,
-      spawnState(e.description, e.subagentType, e.prompt, ahead),
-      SPAWN,
-    )
-    const spawn = spawnOf(
-      DEFAULT_BAND,
-      ROUTE_AT_LEAST,
-      nonEmpty(ahead.map(one => one.description)),
-      mapResult(outcome, decided => decided.answers),
-    )
-    await update($, LEDGER, ledger => pay(ledger, spendIn(outcome)))
-
-    switch (spawn.kind) {
-      case 'wait':
-        await update($, LEDGER, ledger => withoutSpawn(ledger, mine.toolUseId))
-
-        return { deny: waitText(spawn.behind) }
-      case 'start': {
-        const written = await completeWithHaiku(
-          $,
-          BRIEF_SYSTEM,
-          briefRequest(e.description, e.subagentType, e.prompt),
-        )
-        const brief = briefOf(
-          written.kind === 'some' ? some(written.value.text) : none,
-          e.prompt,
-        )
-
-        if (written.kind === 'some') {
-          await update($, LEDGER, ledger =>
-            addClaude(ledger, TIER_MODEL.haiku, written.value.used),
-          )
-        }
-
-        const started = await next({
-          ...e,
-          model: spawn.tier,
-          prompt: briefText(brief),
-        })
-        const agent = spawnedAgent(started)
-        await update($, LEDGER, ledger =>
-          agent.kind === 'some'
-            ? withWork(ledger, work => ({
-                ...work,
-                admitted: work.admitted.map(one =>
-                  one.toolUseId === mine.toolUseId ? { ...one, agent } : one,
-                ),
-              }))
-            : withoutSpawn(ledger, mine.toolUseId),
-        )
-
-        return started
+    // The spawn has happened: keeping its task can only fail quietly.
+    const keep = async (agentId: string) => {
+      const now = await $.clock.now()
+      const live = [...(await liveAgentIds($)), agentId]
+      const mine: Admitted = {
+        toolUseId: e.tool_use_id,
+        description: e.description,
+        task: clip(e.prompt, 4000),
+        at: now,
+        agent: some(agentId),
       }
-      default:
-        return absurd(spawn)
+      await update($, LEDGER, ledger =>
+        withWork(wake(ledger), work => ({
+          ...work,
+          admitted: [
+            ...inFlight(work.admitted, live, now).filter(
+              one => one.toolUseId !== mine.toolUseId,
+            ),
+            mine,
+          ],
+        })),
+      )
     }
-  }).catch(($, e, next) => next(e))
+
+    return keep(agent.value).then(
+      () => started,
+      () => started,
+    )
+  })
 
   // ------------------------------------------------------------ guard
 
@@ -534,7 +403,6 @@ export const register: Register = on => {
     return {
       text: [
         textOf(viewOf(current)),
-        `Main loop route: ${describeRoute(current.work.route)}`,
         `Allowed past relevance: ${current.work.allowed.length > 0 ? current.work.allowed.join(', ') : 'nothing'}`,
       ].join('\n'),
     }

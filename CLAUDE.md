@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Claude Code mod (plugin `jev`, in `jev/`) that calls Jev 1.14 (TypeSafe's decision model, via OpenRouter's `https://openrouter.ai/api/alpha/decisions`) to route prompts and subagents between Opus, Sonnet and Haiku, and to block credential reads and off-task source reads. It is inert and silent when `OPENROUTER_API_KEY` is unset. `README.md` describes the behavior users see; keep it in sync when that behavior changes.
+A Claude Code mod (plugin `jev`, in `jev/`) that calls Jev 1.14 (TypeSafe's decision model, via OpenRouter's `https://openrouter.ai/api/alpha/decisions`) to block credential reads, off-task source reads and too-wide searches. It never changes the model, the prompt or when a subagent starts. It is inert and silent when `OPENROUTER_API_KEY` is unset. `README.md` describes the behavior users see; keep it in sync when that behavior changes.
 
 ## Commands
 
@@ -31,12 +31,12 @@ The code is layered so that everything except the wiring is pure:
 - `jev/hooks/decisions.ts`: the Jev client. `noul`/`choice` build typed questions, and `decide` returns `Result<Decided<Qs>, JevError>`, with answers typed per question via `AnswersOf<Qs>`.
 - `jev/hooks/shell.ts`: reads a command line as the shell would (`segmentsOf`): quotes respected, each `$(...)`/backtick a segment of its own, heredoc bodies kept with the command that reads them. It never runs anything.
 - `jev/hooks/guard.ts`: credential rules that need no model call (`pathRule`, `commandRule`, `ruleFor`), which give each word of a command a role so that message text and search patterns aren't read as files; `cautionOf` (routine commands block only on a clear yes); scoping (`scopeOf`: relevance, or `wide` for a search from `/`, a top-level folder or above home, via `wideRootOf`); the `CREDENTIAL`, `RELEVANCE` and `SYSTEM` question sets; and `judge`, which turns what was asked (`Asked`) into a `Decision`.
-- `jev/hooks/routing.ts`: the `ROUTE` and `SPAWN` question sets, `routeOf` (work type to tier, with an Opus fallback), `spawnOf` (start or wait behind running agents), and Haiku briefs.
+- `jev/hooks/agents.ts`: `inFlight` and `taskOf`, which keep each started subagent's task so its reads are judged against it. Nothing here decides whether or on what model a subagent runs.
 - `jev/hooks/band.ts`: turns a `View` into toned text segments for the band above the prompt.
 - `jev/hooks/register.tsx`: wiring only (entry point listed in `hooks/hooks.json`). Each engine event goes through the boundary, then a pure function, then back to the engine. With no key, every hook passes its event on (`next(e)`) untouched.
 
 Two invariants hold across these files:
-- **Fail closed.** If Jev can't be reached, shell commands are blocked unless `cautionOf` finds them routine, and too-wide searches are blocked; file reads that pass the rules still go through. Routing falls back to Opus on `unsure`, `no-fit` or any `JevError`. The first turn always routes to Opus.
+- **Fail closed.** If Jev can't be reached, shell commands are blocked unless `cautionOf` finds them routine, and too-wide searches are blocked; file reads that pass the rules still go through.
 - **Nothing sent leaks content.** States sent to Jev contain prompts (the last three, clipped), task text and paths, patterns or commands. They never contain file contents.
 
 ## Data modeling: make invalid states unrepresentable
@@ -55,7 +55,7 @@ This is a hard requirement, and `npm run lint:adt` enforces part of it.
 
 Write the failing test first, then the code that makes it pass, then refactor with the suite green. Finish with `npm run check`.
 
-- `jev/tests/model.test.ts` tests the pure layer directly: decoding recorded Jev JSON, reading nouls, rules, `judge`, `routeOf` and `spawnOf`, and band text. Put new logic in the pure modules and test it here.
-- `jev/tests/hooks.test.tsx` drives the registered hooks through the engine using `claude-code/testing`'s `mock`, `stage(on, env)` and `KEY`. Jev's answers, HTTP status, filesystem (`realOf`), live agents and session root are all staged in memory, and the stage records what was sent, run and spawned. Use it for wiring behavior: what gets blocked, which model is chosen, what the band shows, and silence when no key is set.
+- `jev/tests/model.test.ts` tests the pure layer directly: decoding recorded Jev JSON, reading nouls, rules, `judge`, `inFlight` and `taskOf`, and band text. Put new logic in the pure modules and test it here.
+- `jev/tests/hooks.test.tsx` drives the registered hooks through the engine using `claude-code/testing`'s `mock`, `stage(on, env)` and `KEY`. Jev's answers, HTTP status, filesystem (`realOf`), live agents and session root are all staged in memory, and the stage records what was sent, run and spawned. Use it for wiring behavior: what gets blocked, that the model and prompt pass on unchanged, what the band shows, and silence when no key is set.
 - Every bug fix starts with a test that reproduces the bug.
 - When you add a type or variant, add tests that cover each variant, including the dormant (no key) and `JevError` paths.
