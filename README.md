@@ -1,90 +1,180 @@
 # claude-jev-mods
 
-A Claude Code mod that uses [Jev 1.14](https://openrouter.ai/typesafe/jev-1.14), TypeSafe's decision model on OpenRouter, to route work between Claude models and to guard what a session reads.
+## 1. Introduction
 
-Jev does not generate text. It answers typed questions about a state with calibrated probabilities, in about a tenth of a second, so the mod can ask it on every prompt, subagent and guarded tool call.
+This repository contains `jev`, a mod for Claude Code.
 
-## What it does
+The mod uses [Jev 1.14](https://openrouter.ai/typesafe/jev-1.14) to make decisions for Claude Code. Jev is a decision model from TypeSafe. You use Jev through OpenRouter. Jev does not write text. Jev gives a probability for each question that the mod asks. Each answer takes approximately 0.1 seconds.
 
-When `OPENROUTER_API_KEY` is set in the environment Claude Code starts from:
+The mod does these tasks:
 
-- **Routes models.** Each prompt is classified as planning or review (Opus), medium coding (Sonnet) or a clearly defined task (Haiku). The first turn always plans on Opus, and any answer Jev is not sure of falls back to Opus. Subagents are classified the same way.
-- **Briefs subagents.** Haiku rewrites each subagent's task as a short brief (goal, scope, constraints, done when). The task as written is kept beneath it and wins where they differ.
-- **Orders subagents.** The planner is told whether the parts of a request look independent. A subagent that arrives while others run starts only if Jev is clear that it is independent of them; otherwise it is refused until they report.
-- **Blocks credential reads.** `.env` files, private keys, credential stores, environment dumps (`env`, `printenv`, `echo $SECRET`, `process.env`) and credential helpers (`gh auth token` and the like) are blocked by rules, with no model call. Every other `Read`, `Grep`, `Glob` and `Bash` call is put to Jev, and anything short of a clear no is blocked. Routine commands (everyday `git` and `gh pr`, `npm`/`pnpm`/`yarn`/`bun` scripts, `ls`, `tsc` and the like, with nothing secret expanded into them) are blocked only on a clear yes.
-- **Blocks off-task source reads.** A read of source code inside the project is blocked when Jev is clear that it serves neither the task nor a step the task implies. Docs, manifests, config, searches and files outside the project are never blocked for relevance. `/jev allow <path-or-glob>` lifts the check for a path.
-- **Blocks too-wide searches.** A search that starts at `/`, at a top-level folder (`/usr`, `/etc`, ...) or at a folder above your home (`/Users`) is blocked unless Jev puts the task's need for a system-wide search at 0.6 or more. This covers `Grep`, `Glob`, and `find`, `grep -r`, `rg`, `fd`, `ls -R`, `du`, `tree`, `locate` and `mdfind` in shell commands. Searches inside the project or your home folder, and deeper system paths such as `/usr/local/lib/node_modules`, aren't affected.
+- **It selects the model for each prompt.** Planning and review go to Opus. Medium coding goes to Sonnet. Clearly defined tasks go to Haiku. The first prompt of a session always goes to Opus. If Jev is not sure, the prompt goes to Opus.
+- **It selects the model for each subagent.** The mod uses the same rules as for prompts. Haiku also writes a short brief for each subagent.
+- **It controls the order of subagents.** A new subagent starts only if Jev is sure that it does not depend on the subagents that run.
+- **It blocks reads of credentials.** Rules block `.env` files, private keys, credential stores, environment dumps and credential helpers. The rules do not use Jev. Jev examines all other file reads, searches and shell commands.
+- **It blocks reads of source code that is not related to the task.** Jev must be sure that the file is not necessary for the task. The command `/jev allow <path-or-glob>` removes this check for a path.
+- **It blocks searches that are too wide.** A search that starts at `/`, at a top-level folder or above your home folder is blocked. The search continues only if Jev is sure that the task needs a system-wide search.
+- **It shows a band above the prompt.** The band shows the blocks and the token use and cost of each model. Refer to section 5.
 
-When the key is missing, the mod does none of this and says nothing in the transcript.
+If the OpenRouter key is not set, the mod does none of these tasks. The band then shows a red warning.
 
-## What it shows
+> **NOTE:** The guards are not perfect. Jev examines the path or the command. Jev does not examine the contents of a file. An unusual command can possibly go past the rules and Jev.
 
-A band above the prompt: a status row, then a table with a row per Claude model and one for Jev:
+## 2. Screenshot
+
+![The jev band above the Claude Code prompt](docs/band.svg)
+
+This image shows the band from the session that developed this version of the mod. The mod's own band code made the image. The Claude rows show the real token use of that session. The JEV row is an estimate, and the `~` mark shows this.
+
+## 3. Prerequisites
+
+You must have these items:
+
+- Claude Code 2.1.321 or a later version.
+- An OpenRouter account.
+- An OpenRouter API key. Get the key from [openrouter.ai/keys](https://openrouter.ai/keys).
+
+### 3.1. Put the API key in the Claude Code settings
+
+The mod reads the key from the `OPENROUTER_API_KEY` environment variable. Put the key in the `env` block of your user settings. Claude Code then sets the variable for its own process and for each command that it starts. This includes the commands that Claude Code runs in the sandbox.
+
+1. Open the file `~/.claude/settings.json`. If the file does not exist, make a new file.
+2. Add the `env` block below. If the file has an `env` block, add only the `OPENROUTER_API_KEY` line to it.
+
+   ```json
+   {
+     "env": {
+       "OPENROUTER_API_KEY": "sk-or-v1-your-key"
+     }
+   }
+   ```
+
+3. Replace `sk-or-v1-your-key` with your key.
+4. Save the file.
+5. Restart Claude Code.
+
+> **WARNING:** Put the key only in your user settings, `~/.claude/settings.json`. Do not put the key in the settings of a project, `.claude/settings.json`. You can accidentally commit project settings to a repository. Then other persons can see your key.
+
+> **WARNING:** For each decision, the mod sends data to OpenRouter and TypeSafe. This data is your last three prompts (clipped), the task text of subagents, and the path, search pattern or shell command that Jev examines. The mod does not send the contents of files. The mod sends requests only to `https://openrouter.ai/api/alpha/decisions`.
+
+## 4. Installation
+
+### 4.1. Install from a shell
+
+1. Add the marketplace:
+
+   ```bash
+   claude plugin marketplace add joshaustintech/claude-jev-mods
+   ```
+
+2. Install the mod:
+
+   ```bash
+   claude plugin install jev@claude-jev-mods
+   ```
+
+3. Restart Claude Code.
+
+### 4.2. Install from a Claude Code session
+
+1. At the prompt, type this command:
+
+   ```
+   /plugin install jev --marketplace joshaustintech/claude-jev-mods
+   ```
+
+2. Restart Claude Code.
+
+### 4.3. Install in the desktop app
+
+1. Click **+** adjacent to the prompt box.
+2. Click **Plugins**.
+3. Click **Add marketplace**.
+4. Type `joshaustintech/claude-jev-mods`.
+5. Click **Add plugin** for `jev`.
+6. Restart the session.
+
+### 4.4. Update the mod
+
+1. Update the marketplace:
+
+   ```bash
+   claude plugin marketplace update claude-jev-mods
+   ```
+
+2. Update the mod:
+
+   ```bash
+   claude plugin update jev@claude-jev-mods
+   ```
+
+3. Restart Claude Code.
+
+### 4.5. Make sure that the mod operates
+
+1. Start a new Claude Code session.
+2. Look at the band above the prompt.
+3. Make sure that the band shows a green dot and the word `ACTIVE`.
+
+If the band shows `● OPENROUTER_API_KEY missing` in red, the mod cannot find the key. Do the procedure in section 3.1 again.
+
+## 5. Interpreting the band
+
+The band is above the prompt. It has a status row and a table.
 
 ```
-● ACTIVE  blocked  creds 3 · off-task 5 · wide 1
-                in     in $    out  out $
-Fable 5.2    1.24M    $0.41  38.0k  $1.52
-Sonnet 5.5  210.0k    $0.05   9.1k  $0.09
-JEV          61.0k  $0.0026
+● ACTIVE  blocked  creds 1 · off-task 1 · wide 0
+                in      in $    out  out $
+Opus 5.5    10.75M     $3.99  46.7k  $0.93
+Fable 5.2    2.74M     $2.26  78.2k  $3.13
+Sonnet 5.5   1.88M     $0.59   3.0k  $0.03
+JEV         ~68.5k  ~$0.0029
 ```
 
-or, with no key, in red:
+All values are for the current session only.
 
-```
-● OPENROUTER_API_KEY missing · JEV routing and guards are off
-              in   in $    out  out $
-Fable 5.2  1.24M  $0.41  38.0k  $1.52
-```
+### 5.1. The status row
 
-The band uses your theme's colors: labels and headings are dim, a block count turns to the warning color once it is above zero, and the missing-key line is in the error color. In the table, names line up on the left and figures on the right, each column as wide as its widest cell, in a monospaced face with even-width digits so the columns hold on every surface. Jev's row fills only the input columns, since it's one total and its output costs nothing.
+| Item | Meaning |
+| --- | --- |
+| `●` (green) and `ACTIVE` | The mod found the key. The routing and the guards operate. |
+| `● OPENROUTER_API_KEY missing` (red) | The mod did not find the key. The routing and the guards do not operate. The table continues to show the Claude token use. |
+| `creds` | The number of calls that the mod blocked because they can read or show credentials. |
+| `off-task` | The number of source code reads that the mod blocked because they are not related to the task. |
+| `wide` | The number of searches that the mod blocked because they started at a folder that is too wide. |
 
-Counts are for the current session. Each Claude model gets its own row: input tokens, input spend, output tokens, output spend. Rows appear in the order the models were first used, and a model that has used no tokens isn't shown. Input counts uncached tokens and both sides of the prompt cache, each priced at its own rate. The figures cover the main loop, subagents and the Haiku briefs. Jev appears once, as a single total. `/jev` prints the same rows with the current route.
+A count is dim when it is 0. A count changes to the warning color (yellow) when it is more than 0.
 
-## Install
+### 5.2. The table
 
-At the prompt of a terminal session:
+The table has one row for each Claude model that used tokens in the session. A model that used no tokens does not have a row. The rows are in the sequence in which the session first used the models. The last row is for Jev.
 
-```
-/plugin install jev --marketplace joshaustintech/claude-jev-mods
-```
+| Column | Meaning |
+| --- | --- |
+| First column | The name of the model. |
+| `in` | The input tokens. This value includes the uncached tokens, the cache reads and the cache writes. |
+| `in $` | The cost of the input tokens, in US dollars. |
+| `out` | The output tokens. |
+| `out $` | The cost of the output tokens, in US dollars. |
 
-From a shell:
+The table counts the main conversation, the subagents and the Haiku briefs.
 
-```
-claude plugin install jev --marketplace joshaustintech/claude-jev-mods
-```
+The `JEV` row shows only one total. The total is in the `in` and `in $` columns, because Jev output has no cost. A `~` mark shows an estimate. The mod makes an estimate when OpenRouter does not send the token count.
 
-In the desktop app: click + next to the prompt box, then Plugins, Add marketplace with `joshaustintech/claude-jev-mods`, then Add plugin.
+The token values use these units:
 
-To run it from a checkout instead: `claude --plugin-dir ./jev`.
+- No unit: tokens.
+- `k`: thousands of tokens.
+- `M`: millions of tokens.
 
-## What leaves your machine
+> **NOTE:** The costs use the Anthropic list prices that are in the mod. The mod calculates cache writes at the 5-minute rate. The mod does not calculate fast mode or the Haiku 5.5 price above 100K tokens. If the mod does not know a model, the cost column shows `n/a`.
 
-For each decision the mod sends OpenRouter, and through it TypeSafe: your recent prompts (the last three, clipped), subagent task text, and the path, search pattern or shell command of the call being judged. It never sends file contents. Requests go to `https://openrouter.ai/api/alpha/decisions` and nowhere else.
+### 5.3. Collapse or expand the band
 
-## Limits
+- To collapse the band, click `[-]` or push `ctrl+x` and then `ctrl+a`.
+- To expand the band, do the same step again.
 
-- The guards are best effort. Jev judges a read by its path or command, not by what the file holds, and a sufficiently obfuscated command can get past both the rules and the model.
-- The credential guard fails closed: if Jev cannot be reached or refuses the key, shell commands are blocked until it answers, except routine ones. File reads that pass the rules still go through. Too-wide searches are blocked while Jev can't answer.
-- The rules are strict. Any command that names a credential file is blocked, whatever it does with it, and `echo` of an upper-case variable other than a few harmless ones (`PATH`, `HOME`, ...) is blocked. Commands are read the way the shell reads them, so the rules don't read text a command only carries: a commit, tag or PR message (`-m`, `-am`, `--body`, `--title`, or a heredoc given to `git commit -F -` or `cat`), a search pattern (`grep`, `rg`, `git log --grep`), or an `echo` of a variable the same command set. A message that runs or expands something, such as `$(cat .env)`, is still checked, and so is a heredoc fed to a shell or interpreter.
-- Claude spend uses Anthropic's first-party list prices, built into the mod. A turn is filed under the model that answered its last response, and a Haiku brief under Haiku 5.5. Cache writes are priced at the 5-minute rate. Fast mode, Haiku 5.5's pricing above 100K tokens, and models the mod doesn't know (shown as `cost n/a`) aren't priced.
-- Changing the main loop's model between turns drops its prompt cache at each change.
+### 5.4. The `/jev` command
 
-## How the code is built
-
-`jev/types/index.d.ts` is the data model: tagged unions throughout, `Option` for absence and `Result` for failure. A noul is read as `yes`, `no` or `unsure`, never as a boolean. The API key exists only inside a value that proves it is there, and the counters exist only in the active variant of the session, so "guarding with no key" and "red indicator beside counters" have no value that spells them.
-
-`jev/hooks/boundary.ts` is the only file that handles `undefined`, `null` or `unknown`: it decodes Jev's replies against the questions asked and turns the engine's optional fields into `Option`s. `npm run lint:adt` reads the syntax tree and fails on `any` anywhere, and outside the boundary on `null`, `undefined`, casts, `!`, `?.`, `??` and optional properties.
-
-## Development
-
-```
-npm install
-npm run lint:adt
-claude plugin validate jev
-claude plugin test jev
-npm run typecheck
-```
-
-`npm run typecheck` needs the engine's type declarations, which Claude Code writes to `jev/.claude-plugin/types/` the first time it loads the mod from this folder (`claude --plugin-dir ./jev`).
+- Type `/jev` to show the same rows as text, with the current model route.
+- Type `/jev allow <path-or-glob>` to remove the relevance check for a path in this session. The credential rules continue to apply to that path.
