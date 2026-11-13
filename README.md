@@ -22,9 +22,9 @@ If the OpenRouter key is not set, the mod does none of these tasks. The band the
 
 ## 2. Screenshot
 
-![The jev band above the Claude Code prompt](docs/band.svg)
+![The jev band above the Claude Code prompt in the desktop app](docs/band.png)
 
-This image shows the band from the session that developed this version of the mod. The mod's own band code made the image. The Claude rows show the real token use of that session. The JEV row is an estimate, and the `~` mark shows this.
+This screenshot shows the band in the Claude Code desktop app. The session that developed this version of the mod is in the screenshot. The screenshot shows the session after a restart, during its first turn. The table shows only the JEV row, because the mod adds Claude tokens when a turn ends. After the first turn, the table also shows a row for each Claude model. Section 5 shows a full example.
 
 ## 3. Prerequisites
 
