@@ -137,7 +137,7 @@ const ENV_DUMP_WORD = /^(printenv|export\s+-p|declare\s+-[xp]|typeset\s+-x)(\s|$
 const ENV_ALONE = /^(env(\s+-[A-Za-z0]+)*|set|export)(\s*\d?>.*)?$/
 const ENV_IN_CODE = /process\.env|os\.environ|os\.getenv|System\.getenv|ENV\[|\bgetenv\(/
 const HARMLESS_VARIABLE =
-  /^(PATH|HOME|PWD|OLDPWD|USER|LOGNAME|SHELL|TERM|LANG|LC_ALL|TMPDIR|HOSTNAME|EDITOR|PAGER)$/
+  /^(PATH|HOME|PWD|OLDPWD|USER|LOGNAME|SHELL|TERM|LANG|LC_ALL|TMPDIR|HOSTNAME|EDITOR|PAGER|PIPESTATUS|SECONDS|LINENO|RANDOM|SHLVL|BASH_VERSION|BASH_SOURCE|FUNCNAME|PPID|UID|EUID|OSTYPE|HOSTTYPE|MACHTYPE|COLUMNS|LINES)$/
 const ECHOED_VARIABLE = /\$\{?([A-Z][A-Z0-9_]*)/g
 const ECHO = /^(echo|printf)$/
 const CREDENTIAL_HELPER =

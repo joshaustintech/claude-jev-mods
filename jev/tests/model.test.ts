@@ -291,6 +291,17 @@ test('a command is read as the shell reads it: quotes, substitutions and heredoc
   expect(shellSegments('')).toEqual([])
 })
 
+test('the shell\'s own status variables are not secrets', () => {
+  for (const command of [
+    'npm test; echo "exit ${PIPESTATUS[0]}"',
+    'echo "took $SECONDS s, line $LINENO, $RANDOM, $BASH_VERSION, $SHLVL"',
+  ]) {
+    expect(commandRule(command)).toEqual(none)
+  }
+
+  expect(commandRule('echo $OPENROUTER_API_KEY')).toEqual(some('environment-variable-echo'))
+})
+
 test('commits, pushes and searches that only mention secrets are left alone', () => {
   const free = [
     "git commit -q -F - <<'EOF'\nGuard .env reads\n\n- process.env is not read\nexport\nEOF",
