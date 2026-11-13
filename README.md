@@ -24,7 +24,11 @@ If the OpenRouter key is not set, the mod does none of these tasks. The band the
 
 ![The jev band above the Claude Code prompt in the desktop app](docs/band.png)
 
-This screenshot shows the band in the Claude Code desktop app. The session that developed this version of the mod is in the screenshot. The screenshot shows the session after a restart, during its first turn. The table shows only the JEV row, because the mod adds Claude tokens when a turn ends. After the first turn, the table also shows a row for each Claude model. Section 5 shows a full example.
+This screenshot shows the band in the Claude Code desktop app. The session that developed this version of the mod is in the screenshot. The screenshot shows the session after a restart and one completed turn.
+
+The table shows an `Opus 5.5` row, but the model picker shows `Fable 5.2`. This is correct. The mod sends the first turn of a session to Opus. The band shows the model that answered, not the model that you selected.
+
+Section 5 shows an example with more models.
 
 ## 3. Prerequisites
 
