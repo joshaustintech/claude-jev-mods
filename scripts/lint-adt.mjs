@@ -5,7 +5,7 @@
 // boundary.ts only `any` is refused.
 
 import { readdirSync, readFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import ts from 'typescript'
@@ -79,7 +79,7 @@ const findingFor = (node, isBoundary) => {
 const findings = []
 
 for (const file of files) {
-  const name = relative(root, file)
+  const name = relative(root, file).split(sep).join('/')
   const source = ts.createSourceFile(
     file,
     readFileSync(file, 'utf8'),

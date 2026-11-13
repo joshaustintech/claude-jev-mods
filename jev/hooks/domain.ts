@@ -7,17 +7,21 @@ import type {
   ApiKey,
   Band,
   Blocks,
-  Cost,
+  ClaudeUsage,
   Count,
   Decision,
   JevError,
   JevSpend,
   Ledger,
+  ModelLine,
+  ModelSpend,
   Option,
+  Price,
   Probability,
   Reading,
   Result,
   Route,
+  Tier,
   Tokens,
   Usage,
   Usd,
@@ -113,6 +117,12 @@ export const DEFAULT_BAND: Band = bandOf(
   nearestProbability(0.7),
 )
 
+/** A too-wide search runs when the task's need for it is at least 0.6. */
+export const SYSTEM_BAND: Band = bandOf(
+  nearestProbability(0.3),
+  nearestProbability(0.6),
+)
+
 /** How likely the chosen option must be before a route acts on it. */
 export const ROUTE_AT_LEAST: Probability = nearestProbability(0.7)
 
@@ -174,25 +184,134 @@ const addSpend = (a: JevSpend, b: JevSpend): JevSpend => ({
     a.precision === 'exact' && b.precision === 'exact' ? 'exact' : 'estimated',
 })
 
-/** What one Claude response used: fresh input, output and both cache sides. */
-export const claudeTokens = (usage: {
+/** What one Claude response used: fresh input, both cache sides, and output. */
+export const usageOf = (usage: {
   readonly input_tokens: number
   readonly output_tokens: number
   readonly cache_read_input_tokens: number
   readonly cache_creation_input_tokens: number
-}): Tokens =>
-  tokens(
-    usage.input_tokens +
-      usage.output_tokens +
-      usage.cache_read_input_tokens +
-      usage.cache_creation_input_tokens,
+}): ClaudeUsage => ({
+  fresh: tokens(usage.input_tokens),
+  cacheRead: tokens(usage.cache_read_input_tokens),
+  cacheWrite: tokens(usage.cache_creation_input_tokens),
+  output: tokens(usage.output_tokens),
+})
+
+const addUsage = (a: ClaudeUsage, b: ClaudeUsage): ClaudeUsage => ({
+  fresh: addTokens(a.fresh, b.fresh),
+  cacheRead: addTokens(a.cacheRead, b.cacheRead),
+  cacheWrite: addTokens(a.cacheWrite, b.cacheWrite),
+  output: addTokens(a.output, b.output),
+})
+
+/**
+ * The model each tier alias stands for. Only a Haiku brief needs it: a
+ * completion reports no model id, so its use is filed under this one.
+ */
+export const TIER_MODEL: Readonly<Record<Tier, string>> = {
+  opus: 'claude-opus-5-5',
+  sonnet: 'claude-sonnet-5-5',
+  haiku: 'claude-haiku-5-5',
+}
+
+type Family = 'fable' | 'mythos' | 'opus' | 'sonnet' | 'haiku'
+type PriceRow = { readonly families: readonly Family[]; readonly version: string; readonly price: Price }
+
+const priced = (input: number, output: number, cacheRead: number, cacheWrite: number): Price => ({
+  input: usd(input),
+  output: usd(output),
+  cacheRead: usd(cacheRead),
+  cacheWrite: usd(cacheWrite),
+})
+
+/**
+ * Anthropic's first-party rates per million tokens. A cache write is priced
+ * at the 5-minute rate: a turn's usage does not say which TTL it wrote.
+ */
+const PRICES: readonly PriceRow[] = [
+  { families: ['fable', 'mythos'], version: '5.2', price: priced(8, 40, 0.2, 10) },
+  { families: ['fable', 'mythos'], version: '5.1', price: priced(10, 50, 0.25, 12.5) },
+  { families: ['fable', 'mythos'], version: '5', price: priced(10, 50, 1, 12.5) },
+  { families: ['opus'], version: '5.5', price: priced(4, 20, 0.2, 5) },
+  ...['5', '4.8', '4.7', '4.6'].map(
+    (version): PriceRow => ({ families: ['opus'], version, price: priced(5, 25, 0.5, 6.25) }),
+  ),
+  { families: ['sonnet'], version: '5.5', price: priced(2, 10, 0.1, 2.5) },
+  { families: ['sonnet'], version: '5', price: priced(2, 10, 0.2, 2.5) },
+  { families: ['sonnet'], version: '4.6', price: priced(3, 15, 0.3, 3.75) },
+  { families: ['haiku'], version: '5.5', price: priced(0.1, 0.5, 0.01, 0.125) },
+  { families: ['haiku'], version: '4.5', price: priced(1, 5, 0.1, 1.25) },
+]
+
+/** Family and version inside any spelling: `anthropic.` prefixes, `[1m]`, dated snapshots. */
+const MODEL_ID = /(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?!\d)/g
+
+const firstOf = <T>(list: readonly T[]): Option<T> =>
+  list.reduce<Option<T>>((found, one) => (found.kind === 'some' ? found : some(one)), none)
+
+/** A model's name and rates, or none for an id the table does not know. */
+export const priceOf = (id: string): Option<{ readonly label: string; readonly price: Price }> =>
+  firstOf(
+    [...id.toLowerCase().matchAll(MODEL_ID)].flatMap(([, family = '', major = '', minor = '']) => {
+      const version = minor === '' ? major : `${major}.${minor}`
+
+      return PRICES.filter(
+        row => row.version === version && row.families.some(one => one === family),
+      ).map(row => ({
+        label: `${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`,
+        price: row.price,
+      }))
+    }),
   )
+
+const PER_MILLION = 1_000_000
+
+/** One model's tally as the band draws it: input across both cache sides, then output. */
+export const lineOf = (spend: ModelSpend): ModelLine => {
+  const { usage } = spend
+  const known = priceOf(spend.model)
+  const input = addTokens(addTokens(usage.fresh, usage.cacheRead), usage.cacheWrite)
+
+  if (known.kind === 'none') {
+    return {
+      label: spend.model,
+      input: { tokens: input, cost: { kind: 'unknown' } },
+      output: { tokens: usage.output, cost: { kind: 'unknown' } },
+    }
+  }
+
+  const { price } = known.value
+
+  return {
+    label: known.value.label,
+    input: {
+      tokens: input,
+      cost: {
+        kind: 'known',
+        usd: usd(
+          (usage.fresh * price.input +
+            usage.cacheRead * price.cacheRead +
+            usage.cacheWrite * price.cacheWrite) /
+            PER_MILLION,
+        ),
+      },
+    },
+    output: {
+      tokens: usage.output,
+      cost: { kind: 'known', usd: usd((usage.output * price.output) / PER_MILLION) },
+    },
+  }
+}
 
 // ---------------------------------------------------------------- ledger
 
 export const FIRST_ROUTE: Route = { tier: 'opus', why: { kind: 'first-turn' } }
 
-const NO_BLOCKS: Blocks = { credential: count(0), irrelevant: count(0) }
+const NO_BLOCKS: Blocks = {
+  credential: count(0),
+  irrelevant: count(0),
+  wide: count(0),
+}
 const NO_SPEND: JevSpend = { tokens: tokens(0), usd: usd(0), precision: 'exact' }
 const NO_WORK: WorkContext = {
   prompts: [],
@@ -202,7 +321,7 @@ const NO_WORK: WorkContext = {
   admitted: [],
 }
 
-export const INITIAL: Ledger = { kind: 'dormant', claude: tokens(0) }
+export const INITIAL: Ledger = { kind: 'dormant', claude: [] }
 
 export type ActiveLedger = Extract<Ledger, { kind: 'active' }>
 
@@ -230,9 +349,14 @@ export const sleep = (ledger: Ledger): Ledger => ({
   claude: ledger.claude,
 })
 
-export const addClaude = (ledger: Ledger, used: Tokens): Ledger => ({
+/** A model's use added to its own tally, or a new tally after the others. */
+export const addClaude = (ledger: Ledger, model: string, used: ClaudeUsage): Ledger => ({
   ...ledger,
-  claude: addTokens(ledger.claude, used),
+  claude: ledger.claude.some(spend => spend.model === model)
+    ? ledger.claude.map(spend =>
+        spend.model === model ? { model, usage: addUsage(spend.usage, used) } : spend,
+      )
+    : [...ledger.claude, { model, usage: used }],
 })
 
 export const addJev = (ledger: Ledger, spend: JevSpend): Ledger => {
@@ -270,6 +394,8 @@ const countBlock = (blocks: Blocks, decision: Decision): Blocks => {
           return { ...blocks, credential: increment(blocks.credential) }
         case 'irrelevant':
           return { ...blocks, irrelevant: increment(blocks.irrelevant) }
+        case 'wide-search':
+          return { ...blocks, wide: increment(blocks.wide) }
         default:
           return absurd(decision.cause)
       }
@@ -293,15 +419,18 @@ export const applyDecision = (ledger: Ledger, decision: Decision): Ledger => {
   }
 }
 
-export const viewOf = (ledger: Ledger, cost: Cost): View => {
+/** The models that have used tokens, as the band draws them. */
+const linesOf = (claude: readonly ModelSpend[]): readonly ModelLine[] =>
+  claude.map(lineOf).filter(line => line.input.tokens + line.output.tokens > 0)
+
+export const viewOf = (ledger: Ledger): View => {
   switch (ledger.kind) {
     case 'dormant':
-      return { kind: 'dormant', claude: ledger.claude, cost }
+      return { kind: 'dormant', claude: linesOf(ledger.claude) }
     case 'active':
       return {
         kind: 'active',
-        claude: ledger.claude,
-        cost,
+        claude: linesOf(ledger.claude),
         blocks: ledger.blocks,
         jev: ledger.jev,
       }

@@ -10,7 +10,8 @@ import type {
   AnswersOf,
   ApiKey,
   ChoiceAnswer,
-  Cost,
+  ClaudeUsage,
+  CommandTool,
   Decided,
   Intent,
   JevError,
@@ -21,21 +22,20 @@ import type {
   Question,
   Questions,
   Result,
-  Tokens,
+  Target,
   Usage,
 } from '../types'
 import {
-  claudeTokens,
   err,
   isAbsPath,
   isApiKey,
   isProbability,
-  isUsd,
   none,
   normalize,
   ok,
   some,
   tokens,
+  usageOf,
 } from './domain'
 
 // ---------------------------------------------------------------- absence
@@ -79,6 +79,15 @@ const numberField = (value: unknown, key: string): Option<number> => {
   return found.kind === 'some' && typeof found.value === 'number'
     ? some(found.value)
     : none
+}
+
+/** The strings of a list field; none when it is absent or holds none. */
+const textsField = (value: unknown, key: string): readonly string[] => {
+  const found = field(value, key)
+
+  return found.kind === 'some' && Array.isArray(found.value)
+    ? found.value.filter((one): one is string => typeof one === 'string')
+    : []
 }
 
 const probabilityField = (value: unknown, key: string): Option<Probability> => {
@@ -261,7 +270,7 @@ export async function post(
 
 // ---------------------------------------------------------------- engine
 
-/** The key, if the environment holds one. The name is the mod's one env read. */
+/** The key, if the environment holds one: one of the mod's two env reads. */
 export async function readKey($: EngineInterface): Promise<Option<ApiKey>> {
   const value = await $.env.get('OPENROUTER_API_KEY').then(optional, () => none)
 
@@ -270,32 +279,24 @@ export async function readKey($: EngineInterface): Promise<Option<ApiKey>> {
     : none
 }
 
-export async function sessionCost($: EngineInterface): Promise<Cost> {
-  return $.session.usage().then(
-    (usage): Cost => {
-      const cost = optional(usage.cost)
-
-      return cost.kind === 'some' && isUsd(cost.value.usd)
-        ? { kind: 'known', usd: cost.value.usd }
-        : { kind: 'unknown' }
-    },
-    (): Cost => ({ kind: 'unknown' }),
-  )
-}
-
-/** A turn's usage as tokens; a turn that reports none used none we can count. */
-export const turnTokens = (
+/**
+ * A turn's usage and the model that answered it; none when the turn reports
+ * none (an interrupt, an API error), so it is filed under no model.
+ */
+export const turnUsage = (
   usage:
     | {
+        readonly model: string
         readonly input_tokens: number
         readonly output_tokens: number
         readonly cache_read_input_tokens: number
         readonly cache_creation_input_tokens: number
       }
     | undefined,
-): Tokens => (usage === undefined ? tokens(0) : claudeTokens(usage))
+): Option<{ readonly model: string; readonly used: ClaudeUsage }> =>
+  usage === undefined ? none : some({ model: usage.model, used: usageOf(usage) })
 
-export type Completion = { readonly text: string; readonly used: Tokens }
+export type Completion = { readonly text: string; readonly used: ClaudeUsage }
 
 /** One Haiku completion; none when it did not answer or could not be sent. */
 export async function completeWithHaiku(
@@ -306,7 +307,7 @@ export async function completeWithHaiku(
   return $.model.complete({ model: 'haiku', system, prompt }).then(
     (reply): Option<Completion> =>
       reply.isAnswered && reply.text.trim().length > 0
-        ? some({ text: reply.text, used: claudeTokens(reply.usage) })
+        ? some({ text: reply.text, used: usageOf(reply.usage) })
         : none,
     (): Option<Completion> => none,
   )
@@ -337,30 +338,77 @@ export const spawnedAgent = (started: {
 }): Option<string> =>
   started.deny === undefined ? optional(started.agentId) : none
 
+const isAbsolute = (raw: string): boolean => /^([A-Za-z]:)?[\\/]/.test(raw)
+
+/**
+ * A path as the rules read it: `/` between its parts whatever the platform
+ * wrote, `.` and `..` worked out, and a leading `/` (so `C:\repo\.env` is
+ * `/C:/repo/.env`). Only compared and matched, never handed back to a tool.
+ */
+const canonical = (path: string): string => normalize(path.replace(/\\/g, '/'))
+
+/** Where a path lands with its links followed; its own spelling when it leads nowhere. */
+async function landing($: EngineInterface, path: string): Promise<string> {
+  return $.fs.stat(path, { resolve: true }).then(
+    stat => {
+      const resolved = optional(stat.realPath)
+
+      return canonical(resolved.kind === 'some' ? resolved.value : path)
+    },
+    () => canonical(path),
+  )
+}
+
 async function resolve(
   $: EngineInterface,
   cwd: string,
   raw: string,
 ): Promise<Option<{ readonly asked: AbsPath; readonly real: AbsPath }>> {
-  const asked = normalize(raw.startsWith('/') ? raw : `${cwd}/${raw}`)
+  const full = isAbsolute(raw) ? raw : `${cwd}/${raw}`
+  const asked = canonical(full)
   // A file that is not there has no link to resolve: its own spelling stands.
-  const real = await $.fs.stat(asked, { resolve: true }).then(
-    stat => {
-      const resolved = optional(stat.realPath)
-
-      return resolved.kind === 'some' ? resolved.value : asked
-    },
-    () => asked,
-  )
+  const real = await landing($, full)
 
   return isAbsPath(asked) && isAbsPath(real) ? some({ asked, real }) : none
 }
 
-const MCP_FILE_READER = /^mcp__.*(read|file|cat|open)/i
+/**
+ * The session's root resolved the way a read's path is, so a root reached
+ * through a link still holds the files under it.
+ */
+export async function sessionRoot($: EngineInterface): Promise<string> {
+  return landing($, await $.session.root())
+}
+
+/**
+ * The user's home folder, resolved the way a search's root is. The mod's
+ * other env read: it says how wide a search is, and is never sent anywhere.
+ */
+export async function homeDir($: EngineInterface): Promise<Option<AbsPath>> {
+  const posix = await $.env.get('HOME').then(optional, () => none)
+  const given =
+    posix.kind === 'some'
+      ? posix
+      : await $.env.get('USERPROFILE').then(optional, () => none)
+
+  if (given.kind === 'none' || !isAbsolute(given.value)) {
+    return none
+  }
+
+  const real = await landing($, given.value)
+
+  return isAbsPath(real) ? some(real) : none
+}
+
+const MCP_FILE_READER =
+  /^mcp__.*(read|file|cat|open|get|view|load|show|fetch|text|content|head|tail)/i
+
+const isCommandTool = (tool: string): tool is CommandTool =>
+  tool === 'Bash' || tool === 'Monitor'
 
 /** The tools the guard looks at; every other call passes untouched. */
 export const isGuardedTool = (tool: string): boolean =>
-  tool === 'Bash' ||
+  isCommandTool(tool) ||
   tool === 'Read' ||
   tool === 'NotebookRead' ||
   tool === 'Grep' ||
@@ -379,11 +427,16 @@ export async function classify(
   input: unknown,
   actor: Actor,
 ): Promise<Intent> {
-  if (tool === 'Bash') {
+  if (isCommandTool(tool)) {
     const command = textField(input, 'command')
 
     return command.kind === 'some'
-      ? { kind: 'read', actor, target: { kind: 'command', command: command.value } }
+      ? {
+          kind: 'read',
+          actor,
+          target: { kind: 'command', tool, command: command.value },
+          more: [],
+        }
       : { kind: 'other' }
   }
 
@@ -396,35 +449,43 @@ export async function classify(
       ? {
           kind: 'read',
           actor,
-          target: { kind: 'search', tool, root: root.value.real, pattern: pattern.value },
+          // Glob's pattern only lists names; Grep's `glob` picks what is read.
+          target:
+            tool === 'Grep'
+              ? {
+                  kind: 'search',
+                  tool,
+                  root: root.value.real,
+                  pattern: pattern.value,
+                  glob: textField(input, 'glob'),
+                }
+              : { kind: 'search', tool, root: root.value.real, pattern: pattern.value },
+          more: [],
         }
       : { kind: 'other' }
   }
 
   if (tool === 'Read' || tool === 'NotebookRead' || MCP_FILE_READER.test(tool)) {
-    const filePath = textField(input, 'file_path')
-    const notebookPath = textField(input, 'notebook_path')
-    const plainPath = textField(input, 'path')
-    const named =
-      filePath.kind === 'some'
-        ? filePath
-        : notebookPath.kind === 'some'
-          ? notebookPath
-          : plainPath
+    // One file under any of the usual names, or several in a list.
+    const named = [
+      ...['file_path', 'notebook_path', 'path', 'file', 'filename'].flatMap(key => {
+        const one = textField(input, key)
 
-    if (named.kind === 'none') {
-      return { kind: 'other' }
-    }
+        return one.kind === 'some' ? [one.value] : []
+      }),
+      ...['paths', 'file_paths', 'files'].flatMap(key => textsField(input, key)),
+    ]
+    const resolved = await Promise.all(named.map(raw => resolve($, cwd, raw)))
+    const targets = resolved.flatMap((path): readonly Target[] =>
+      path.kind === 'some'
+        ? [{ kind: 'file', tool, path: path.value.real, asked: path.value.asked }]
+        : [],
+    )
+    const [target, ...more] = targets
 
-    const path = await resolve($, cwd, named.value)
-
-    return path.kind === 'some'
-      ? {
-          kind: 'read',
-          actor,
-          target: { kind: 'file', tool, path: path.value.real, asked: path.value.asked },
-        }
-      : { kind: 'other' }
+    return target === undefined
+      ? { kind: 'other' }
+      : { kind: 'read', actor, target, more }
   }
 
   return { kind: 'other' }

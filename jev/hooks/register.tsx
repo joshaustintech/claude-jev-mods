@@ -25,14 +25,15 @@ import type { Segment } from './band'
 import {
   classify,
   completeWithHaiku,
+  homeDir,
   isGuardedTool,
   liveAgentIds,
   nonEmpty,
   optional,
   readKey,
-  sessionCost,
+  sessionRoot,
   spawnedAgent,
-  turnTokens,
+  turnUsage,
 } from './boundary'
 import { decide } from './decisions'
 import {
@@ -40,6 +41,7 @@ import {
   FIRST_ROUTE,
   INITIAL,
   ROUTE_AT_LEAST,
+  TIER_MODEL,
   absurd,
   addClaude,
   addJev,
@@ -59,10 +61,11 @@ import {
 import {
   CREDENTIAL,
   RELEVANCE,
+  SYSTEM,
   denyText,
   guardState,
   judge,
-  ruleFor,
+  ruleForAll,
   scopeOf,
 } from './guard'
 import {
@@ -84,7 +87,7 @@ import {
 } from './routing'
 
 const LEDGER = atom({ plugin: 'jev', key: 'ledger' } as const, INITIAL, {
-  shape: 'ledger-1',
+  shape: 'ledger-3',
 })
 
 /** The key, or nothing: the one test of whether the mod does anything. */
@@ -118,25 +121,39 @@ async function verdictOf(
         ...CREDENTIAL,
         ...RELEVANCE,
       })
-      const judged = mapResult(outcome, decided => ({
-        credential: decided.answers,
-        relevance: some(decided.answers),
-      }))
 
       return {
-        decision: judge(DEFAULT_BAND, target, scope, judged),
+        decision: judge(DEFAULT_BAND, target, {
+          kind: 'judge',
+          outcome: mapResult(outcome, decided => decided.answers),
+        }),
         spend: spendIn(outcome),
       }
     }
     case 'exempt': {
       const outcome = await decide($, active, state, CREDENTIAL)
-      const judged = mapResult(outcome, decided => ({
-        credential: decided.answers,
-        relevance: none,
-      }))
 
       return {
-        decision: judge(DEFAULT_BAND, target, scope, judged),
+        decision: judge(DEFAULT_BAND, target, {
+          kind: 'exempt',
+          why: scope.why,
+          outcome: mapResult(outcome, decided => decided.answers),
+        }),
+        spend: spendIn(outcome),
+      }
+    }
+    case 'wide': {
+      const outcome = await decide($, active, state, {
+        ...CREDENTIAL,
+        ...SYSTEM,
+      })
+
+      return {
+        decision: judge(DEFAULT_BAND, target, {
+          kind: 'wide',
+          root: scope.root,
+          outcome: mapResult(outcome, decided => decided.answers),
+        }),
         spend: spendIn(outcome),
       }
     }
@@ -308,7 +325,7 @@ export const register: Register = on => {
 
         if (written.kind === 'some') {
           await update($, LEDGER, ledger =>
-            addClaude(ledger, written.value.used),
+            addClaude(ledger, TIER_MODEL.haiku, written.value.used),
           )
         }
 
@@ -362,8 +379,8 @@ export const register: Register = on => {
       return next(e)
     }
 
-    const { target } = intent
-    const rule = ruleFor(target)
+    const { target, more } = intent
+    const rule = ruleForAll([target, ...more])
     const work = wake(await read($, LEDGER)).work
     const verdict: Verdict =
       rule.kind === 'some'
@@ -381,9 +398,10 @@ export const register: Register = on => {
             $,
             active.value,
             target,
-            scopeOf(target, await $.session.root(), work),
+            scopeOf(target, await sessionRoot($), await homeDir($), work),
             guardState(
               target,
+              more,
               work,
               actor.kind === 'subagent'
                 ? taskOf(work.admitted, actor.agentId)
@@ -426,8 +444,12 @@ export const register: Register = on => {
   // ------------------------------------------------------------ display
 
   on('turn.complete', async ($, e, next) => {
-    const used = turnTokens(e.usage)
-    await update($, LEDGER, ledger => addClaude(ledger, used))
+    const turn = turnUsage(e.usage)
+
+    if (turn.kind === 'some') {
+      const { model, used } = turn.value
+      await update($, LEDGER, ledger => addClaude(ledger, model, used))
+    }
 
     return next(e)
   })
@@ -440,10 +462,7 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     const active = await activeOf($)
     const ledger = await read($, LEDGER)
-    const view = viewOf(
-      active.kind === 'some' ? wake(ledger) : sleep(ledger),
-      await sessionCost($),
-    )
+    const view = viewOf(active.kind === 'some' ? wake(ledger) : sleep(ledger))
     const draw = (segment: Segment) => {
       switch (segment.tone) {
         case 'alarm':
@@ -469,10 +488,9 @@ export const register: Register = on => {
   on('command.run', { command: 'jev' }, async ($, e) => {
     const active = await activeOf($)
     const ledger = await read($, LEDGER)
-    const cost = await sessionCost($)
 
     if (active.kind === 'none') {
-      return { text: textOf(viewOf(sleep(ledger), cost)) }
+      return { text: textOf(viewOf(sleep(ledger))) }
     }
 
     const args = e.args.trim()
@@ -499,7 +517,7 @@ export const register: Register = on => {
 
     return {
       text: [
-        textOf(viewOf(current, cost)),
+        textOf(viewOf(current)),
         `Main loop route: ${describeRoute(current.work.route)}`,
         `Allowed past relevance: ${current.work.allowed.length > 0 ? current.work.allowed.join(', ') : 'nothing'}`,
       ].join('\n'),

@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Engine declarations, written by Claude Code when it loads the mod
+jev/.claude-plugin/types/

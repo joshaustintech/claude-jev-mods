@@ -31,25 +31,34 @@ type Stage = {
   spawned: { model: string; prompt: string }[]
   stepped: string[]
   live: string[]
+  /** The session's root as the engine names it, and where a path lands, if it is a link. */
+  root: string
+  realOf: (path: string) => string | undefined
 }
 
 /** Stands for everything beneath the mod, and records what reached it. */
 const stage = (on: On, env: Record<string, string>): Stage => {
-  const it: Stage = { answers: {}, status: 200, sent: [], ran: [], spawned: [], stepped: [], live: [] }
+  const it: Stage = { answers: {}, status: 200, sent: [], ran: [], spawned: [], stepped: [], live: [], root: '/repo', realOf: () => undefined }
 
   mock.env(on, env)
   mock.clock(on, { now: 1000 })
   on('command.register', () => ({ value: { command: 'jev' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/repo' }))
-  on('session.root', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: it.root }))
   on('session.usage', () => ({
     value: { startedAt: 0, context: { window: 200000 }, rateLimits: [], cost: { usd: 1.24 } },
   }))
   on('agent.list', () => ({
     value: it.live.map(id => ({ id, description: id, type: 'general-purpose', status: 'running' as const })),
   }))
-  on('fs.stat', () => ({ value: { kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false } }))
+  on('fs.stat', (_, e) => {
+    const realPath = it.realOf(String(e.path))
+
+    return {
+      value: { kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false, ...(realPath === undefined ? {} : { realPath }) },
+    }
+  })
   on('model.complete', () => ({
     value: {
       isAnswered: true as const,
@@ -187,9 +196,43 @@ test('credential reads are blocked by rule, by Jev, and counted', async ($, on) 
   expect(it.ran).toEqual(['Bash'])
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /creds blocked/ }))?.text).toContain('creds blocked 4 · irrelevant blocked 0')
+  expect((await ui.find({ type: 'Text', text: /creds blocked/ }))?.text).toContain('creds blocked 4 · irrelevant blocked 0 · wide blocked 0')
   expect(await ui.find({ type: 'Text', text: /missing/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('a file filter, a list of paths and a watched command are all guarded', async ($, on) => {
+  const it = stage(on, KEY)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.prompt.submit({ text: 'Fix the login bug', wait: false, origin: { kind: 'composer' } })
+
+  // What a search looks for is free; the files it is narrowed to are not.
+  const term = await $.tool.call({ tool: 'Grep', pattern: 'refreshToken' } as never)
+  const filtered = await $.tool.call({ tool: 'Grep', pattern: '.', glob: '.env' } as never)
+  expect(term.deny).toBeUndefined()
+  expect(filtered.deny).toContain('dotenv-file')
+
+  const several = await $.tool.call({
+    tool: 'mcp__filesystem__read_multiple_files',
+    paths: ['/repo/README.md', '/repo/.env'],
+  } as never)
+  expect(several.deny).toContain('dotenv-file')
+
+  const watched = await $.tool.call({ tool: 'Monitor', description: 'env', timeout_ms: 1000, command: 'printenv' } as never)
+  expect(watched.deny).toContain('environment-dump')
+  expect(it.ran).toEqual(['Grep'])
+})
+
+test('a root reached through a link still holds its files to relevance', async ($, on) => {
+  const it = stage(on, KEY)
+  it.root = '/link'
+  it.realOf = path => path.replace(/^\/link/, '/repo')
+  await $.session.start({ cwd: '/link', surface: 'terminal', isInteractive: true })
+  await $.prompt.submit({ text: 'Fix the login redirect bug', wait: false, origin: { kind: 'composer' } })
+
+  it.answers = { needed_for_task: 0.04, needed_for_implied_subtask: 0.1 }
+  const billing = await $.tool.call({ tool: 'Read', file_path: '/link/src/billing/invoice.ts' })
+  expect(billing.deny).toContain('unrelated to the task')
 })
 
 test('source code off the task is blocked only on two clear nos', async ($, on) => {
@@ -227,21 +270,93 @@ test('source code off the task is blocked only on two clear nos', async ($, on) 
   expect(allowed.deny).toBeUndefined()
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /irrelevant blocked/ }))?.text).toContain('creds blocked 0 · irrelevant blocked 1')
+  expect((await ui.find({ type: 'Text', text: /irrelevant blocked/ }))?.text).toContain('creds blocked 0 · irrelevant blocked 1 · wide blocked 0')
   await ui.unmount()
 })
 
-test('when Jev cannot answer, a file is read and a command is not run', async ($, on) => {
+test('when Jev cannot answer, a file is read, a routine command runs and others do not', async ($, on) => {
   const it = stage(on, KEY)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await $.prompt.submit({ text: 'Fix the login bug', wait: false, origin: { kind: 'composer' } })
   it.status = 401
 
   const file = await $.tool.call({ tool: 'Read', file_path: '/repo/src/auth/login.ts' })
-  const command = await $.tool.call({ tool: 'Bash', command: 'npm test' })
+  const routine = await $.tool.call({ tool: 'Bash', command: 'npm test' })
+  const command = await $.tool.call({ tool: 'Bash', command: 'make deploy' })
+  const wide = await $.tool.call({ tool: 'Grep', pattern: 'x', path: '/' } as never)
 
   expect(file.deny).toBeUndefined()
+  expect(routine.deny).toBeUndefined()
   expect(command.deny).toContain('OpenRouter refused the API key')
+  expect(wide.deny).toContain('starts at /')
+  expect(it.ran).toEqual(['Read', 'Bash'])
+})
+
+test('routine commands are blocked only on a clear yes; commits with heredocs run', async ($, on) => {
+  const it = stage(on, KEY)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.prompt.submit({ text: 'Commit and push', wait: false, origin: { kind: 'composer' } })
+
+  // The answer that once blocked `npm test`.
+  it.answers = { reads_secret_store: 0.39 }
+  const tests = await $.tool.call({ tool: 'Bash', command: 'ls jev; npm run lint:adt; npm test' })
+  const commit = await $.tool.call({
+    tool: 'Bash',
+    command: "git add -A && git commit -q -F - <<'EOF'\nGuard .env reads; process.env and printenv\nEOF\ngit push",
+  })
+  const deploy = await $.tool.call({ tool: 'Bash', command: 'make deploy' })
+
+  expect(tests.deny).toBeUndefined()
+  expect(commit.deny).toBeUndefined()
+  expect(deploy.deny).toContain('reads_secret_store at 0.39')
+
+  it.answers = { reads_secret_store: 0.9 }
+  const clear = await $.tool.call({ tool: 'Bash', command: 'git push' })
+  expect(clear.deny).toContain('reads_secret_store at 0.90')
+})
+
+test('a search from a too-wide folder runs only when the task needs the whole system', async ($, on) => {
+  const it = stage(on, { ...KEY, HOME: '/Users/x' })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.prompt.submit({ text: 'Fix the login bug', wait: false, origin: { kind: 'composer' } })
+
+  it.answers = { needs_system_wide_search: 0.3 }
+  const grep = await $.tool.call({ tool: 'Grep', pattern: 'login', path: '/' } as never)
+  const find = await $.tool.call({ tool: 'Bash', command: 'find /Users -name "*.ts" 2>/dev/null' })
+  expect(grep.deny).toContain('starts at /,')
+  expect(find.deny).toContain('starts at /Users,')
+  // Credentials and the system need are asked in one request.
+  expect(Object.keys(it.sent.at(-1)?.questions ?? {})).toEqual([
+    'reveals_env_values',
+    'reads_secret_store',
+    'prints_or_sends_token',
+    'needs_system_wide_search',
+  ])
+
+  // Searching the project or home is not wide, and asks nothing about it.
+  const home = await $.tool.call({ tool: 'Bash', command: 'rg login ~/code' })
+  expect(home.deny).toBeUndefined()
+  expect(Object.keys(it.sent.at(-1)?.questions ?? {})).not.toContain('needs_system_wide_search')
+
+  it.answers = { needs_system_wide_search: 0.8 }
+  const asked = await $.tool.call({ tool: 'Grep', pattern: 'libssl', path: '/' } as never)
+  expect(asked.deny).toBeUndefined()
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /wide blocked/ }))?.text).toContain('wide blocked 2')
+  await ui.unmount()
+})
+
+test('with no key a wide search passes untouched and silently', async ($, on) => {
+  const it = stage(on, { HOME: '/Users/x' })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const grep = await $.tool.call({ tool: 'Grep', pattern: 'x', path: '/' } as never)
+  const find = await $.tool.call({ tool: 'Bash', command: 'find / -name x' })
+
+  expect(grep.deny).toBeUndefined()
+  expect(find.deny).toBeUndefined()
+  expect(it.sent.length).toBe(0)
 })
 
 test('prompts are routed: Opus first, then by Jev, with a note on subagent order', async ($, on) => {
@@ -316,9 +431,58 @@ test('with no key a step keeps its model, and Claude tokens are still tallied', 
   })
 
   expect(it.stepped).toEqual(['claude-fable-5-2'])
+  expect(it.sent.length).toBe(0)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Claude/ }))?.text).toBe(' · Claude 1.2k tok $1.24')
+  expect((await ui.find({ type: 'Text', text: /Fable/ }))?.text).toBe(' · Fable 5.2 in 900 $0.0072 · out 300 $0.01')
   await ui.unmount()
+})
+
+const finished = (turnId: string, model: string, input: number, output: number, agentId?: string) => ({
+  answer: 'done',
+  durationMs: 10,
+  isAborted: false,
+  turnId,
+  reason: 'answer' as const,
+  ...(agentId ? { agentId } : {}),
+  usage: { model, input_tokens: input, output_tokens: output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+})
+
+test('Claude usage is shown per model, in then out, and unused models are not', async ($, on) => {
+  stage(on, KEY)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const before = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await before.find({ type: 'Text', text: /Fable|Sonnet| in / })).toBeUndefined()
+  await before.unmount()
+
+  await $.turn.complete(finished('t1', 'claude-fable-5-2', 2000, 1000))
+  await $.turn.complete(finished('t2', 'claude-sonnet-5-5', 3000, 500, 'agent-1'))
+  await $.turn.complete(finished('t3', 'claude-haiku-5-5', 0, 0, 'agent-2'))
+  await $.turn.complete(finished('t4', 'claude-fable-5-2', 0, 250))
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const band = (await ui.find({ type: 'Text', text: /Fable/ }))?.text
+  expect(band).toContain(
+    'Fable 5.2 in 2.0k $0.02 · out 1.3k $0.05 · Sonnet 5.5 in 3.0k $0.0060 · out 500 $0.0050 · JEV',
+  )
+  expect(band).not.toContain('Haiku')
+  await ui.unmount()
+})
+
+test('a commit whose message names env reads and secret files is not blocked', async ($, on) => {
+  const it = stage(on, KEY)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.prompt.submit({ text: 'Commit and push the guard fix', wait: false, origin: { kind: 'composer' } })
+
+  const commit = await $.tool.call({
+    tool: 'Bash',
+    command: `git commit -m "$(cat <<'EOF'\nStop reading process.env; block .env and secrets.json\nEOF\n)" && git push`,
+  })
+
+  expect(commit.deny).toBeUndefined()
+  expect(it.ran).toEqual(['Bash'])
+  // Jev still judges the whole command, message included.
+  expect(JSON.stringify(it.sent.at(-1)?.state)).toContain('process.env')
 })
 
 test('subagents get a tier and a Haiku brief, and wait when they depend on running work', async ($, on) => {
@@ -344,4 +508,8 @@ test('subagents get a tier and a Haiku brief, and wait when they depend on runni
   const third = await $.agent.spawn({ ...SPAWN, tool_use_id: 'toolu_3', description: 'Write docs' })
   expect(third.deny).toBeUndefined()
   expect(it.spawned[1]?.model).toBe('sonnet')
+
+  // Each Haiku brief (50 in, 20 out) is Claude spend, filed under Haiku.
+  const status = await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect(status.text).toContain('Haiku 5.5 in 100 $0.0000 · out 40 $0.0000')
 })

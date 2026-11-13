@@ -1,7 +1,7 @@
 // The band above the prompt, as data: a View becomes segments of toned text,
 // and the render hook only maps tones to colors.
 
-import type { Cost, JevSpend, Tokens, View } from '../types'
+import type { Cost, JevSpend, ModelLine, Spent, Tokens, View } from '../types'
 import { absurd } from './domain'
 
 export type Tone = 'plain' | 'quiet' | 'good' | 'alarm'
@@ -18,7 +18,8 @@ export const formatTokens = (used: Tokens): string => {
 const formatCost = (cost: Cost): string => {
   switch (cost.kind) {
     case 'known':
-      return `$${cost.usd.toFixed(2)}`
+      // A cent hides a cheap model's spend: below one, show four places.
+      return `$${cost.usd.toFixed(cost.usd < 0.01 ? 4 : 2)}`
     case 'unknown':
       return 'cost n/a'
     default:
@@ -32,27 +33,43 @@ const formatJev = (jev: JevSpend): string => {
   return `JEV ${mark}${formatTokens(jev.tokens)} tok ${mark}$${jev.usd.toFixed(4)}`
 }
 
-const claude = (used: Tokens, cost: Cost): string =>
-  `Claude ${formatTokens(used)} tok ${formatCost(cost)}`
+const spent = (side: 'in' | 'out', one: Spent): string =>
+  `${side} ${formatTokens(one.tokens)} ${formatCost(one.cost)}`
+
+/** Each model: input tokens, input spend, output tokens, output spend. */
+const claude = (lines: readonly ModelLine[]): readonly string[] =>
+  lines.map(line => `${line.label} ${spent('in', line.input)} · ${spent('out', line.output)}`)
 
 /** The whole band. The red indicator exists only in the dormant view. */
 export const segmentsOf = (view: View): readonly Segment[] => {
   switch (view.kind) {
-    case 'dormant':
+    case 'dormant': {
+      const lines = claude(view.claude)
+
       return [
         {
           tone: 'alarm',
           text: '● OPENROUTER_API_KEY missing: JEV routing and guards are off',
         },
-        { tone: 'quiet', text: ` · ${claude(view.claude, view.cost)}` },
+        ...(lines.length > 0
+          ? [{ tone: 'quiet' as const, text: ` · ${lines.join(' · ')}` }]
+          : []),
       ]
+    }
     case 'active':
       return [
         { tone: 'good', text: '● ' },
         { tone: 'plain', text: 'JEV' },
         {
           tone: 'quiet',
-          text: ` · creds blocked ${view.blocks.credential} · irrelevant blocked ${view.blocks.irrelevant} · ${claude(view.claude, view.cost)} · ${formatJev(view.jev)}`,
+          text: [
+            '',
+            `creds blocked ${view.blocks.credential}`,
+            `irrelevant blocked ${view.blocks.irrelevant}`,
+            `wide blocked ${view.blocks.wide}`,
+            ...claude(view.claude),
+            formatJev(view.jev),
+          ].join(' · '),
         },
       ]
     default:
