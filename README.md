@@ -19,19 +19,25 @@ When the key is missing, the mod does none of this and says nothing in the trans
 
 ## What it shows
 
-A band above the prompt:
+A band above the prompt, one row for the guard, one per Claude model, and one for Jev:
 
 ```
-● JEV · creds blocked 3 · irrelevant blocked 5 · wide blocked 1 · Fable 5.2 in 1.24M $0.41 · out 38.0k $1.52 · Sonnet 5.5 in 210.0k $0.05 · out 9.1k $0.09 · JEV 61.0k tok $0.0026
+● JEV  blocked  creds 3 · off-task 5 · wide 1
+Fable 5.2   in  1.24M $0.41   out 38.0k $1.52
+Sonnet 5.5  in 210.0k $0.05   out  9.1k $0.09
+JEV         61.0k tok $0.0026
 ```
 
 or, with no key, in red:
 
 ```
-● OPENROUTER_API_KEY missing: JEV routing and guards are off · Fable 5.2 in 1.24M $0.41 · out 38.0k $1.52
+● OPENROUTER_API_KEY missing · JEV routing and guards are off
+Fable 5.2   in 1.24M $0.41   out 38.0k $1.52
 ```
 
-Counts are for the current session. Each Claude model gets its own entry: input tokens, input spend, output tokens, output spend. Entries appear in the order the models were first used, and a model that has used no tokens isn't shown. Input counts uncached tokens and both sides of the prompt cache, each priced at its own rate. The figures cover the main loop, subagents and the Haiku briefs. Jev appears once, as a single total. `/jev` prints the same line with the current route.
+The band uses your theme's colors: labels are dim, a block count turns to the warning color once it is above zero, and the missing-key line is in the error color. Model columns line up so the figures can be compared at a glance, and a row wraps rather than running past the band's edge.
+
+Counts are for the current session. Each Claude model gets its own row: input tokens, input spend, output tokens, output spend. Rows appear in the order the models were first used, and a model that has used no tokens isn't shown. Input counts uncached tokens and both sides of the prompt cache, each priced at its own rate. The figures cover the main loop, subagents and the Haiku briefs. Jev appears once, as a single total. `/jev` prints the same rows with the current route.
 
 ## Install
 

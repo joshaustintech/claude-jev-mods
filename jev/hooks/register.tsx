@@ -20,8 +20,8 @@ import type {
   Target,
   Usage,
 } from '../types'
-import { segmentsOf, textOf } from './band'
-import type { Segment } from './band'
+import { rowsOf, textOf } from './band'
+import type { Row, Segment } from './band'
 import {
   classify,
   completeWithHaiku,
@@ -463,26 +463,41 @@ export const register: Register = on => {
     const active = await activeOf($)
     const ledger = await read($, LEDGER)
     const view = viewOf(active.kind === 'some' ? wake(ledger) : sleep(ledger))
+    // Theme keys only, so the band follows the person's theme.
     const draw = (segment: Segment) => {
       switch (segment.tone) {
         case 'alarm':
           return (
-            <Text color="error" bold>
+            <Text color="error" weight="semibold">
+              {segment.text}
+            </Text>
+          )
+        case 'warn':
+          return (
+            <Text color="warning" weight="semibold">
               {segment.text}
             </Text>
           )
         case 'good':
           return <Text color="success">{segment.text}</Text>
+        case 'strong':
+          return <Text weight="semibold">{segment.text}</Text>
         case 'quiet':
-          return <Text dimColor>{segment.text}</Text>
+          return <Text color="subtle">{segment.text}</Text>
         case 'plain':
           return <Text>{segment.text}</Text>
         default:
           return absurd(segment.tone)
       }
     }
+    // A row wraps at the band's width rather than running under its marks.
+    const line = (row: Row) => <Box flexWrap="wrap">{row.map(draw)}</Box>
 
-    return <Box>{segmentsOf(view).map(draw)}</Box>
+    return (
+      <Box flexDirection="column" width={e.props.bodyColumns}>
+        {rowsOf(view).map(line)}
+      </Box>
+    )
   })
 
   on('command.run', { command: 'jev' }, async ($, e) => {

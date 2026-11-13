@@ -155,7 +155,8 @@ test('with no key the mod does nothing and the band says so in red', async ($, o
     const ui = await $.ui.mount({ ...BAND, surface })
     const alarm = await ui.find({ type: 'Text', text: /OPENROUTER_API_KEY missing/ })
 
-    expect(alarm?.text).toBe('● OPENROUTER_API_KEY missing: JEV routing and guards are off')
+    expect(alarm?.text).toBe('● OPENROUTER_API_KEY missing')
+    expect(alarm?.props.color).toBe('error')
     expect(await ui.find({ type: 'Text', text: /blocked/ })).toBeUndefined()
     await ui.unmount()
   }
@@ -196,7 +197,8 @@ test('credential reads are blocked by rule, by Jev, and counted', async ($, on) 
   expect(it.ran).toEqual(['Bash'])
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /creds blocked/ }))?.text).toContain('creds blocked 4 · irrelevant blocked 0 · wide blocked 0')
+  const count = await ui.find({ type: 'Text', text: '4' })
+  expect(count?.props.color).toBe('warning')
   expect(await ui.find({ type: 'Text', text: /missing/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -270,7 +272,9 @@ test('source code off the task is blocked only on two clear nos', async ($, on) 
   expect(allowed.deny).toBeUndefined()
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /irrelevant blocked/ }))?.text).toContain('creds blocked 0 · irrelevant blocked 1 · wide blocked 0')
+  expect((await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })).text).toContain(
+    'blocked  creds 0 · off-task 1 · wide 0',
+  )
   await ui.unmount()
 })
 
@@ -342,9 +346,8 @@ test('a search from a too-wide folder runs only when the task needs the whole sy
   const asked = await $.tool.call({ tool: 'Grep', pattern: 'libssl', path: '/' } as never)
   expect(asked.deny).toBeUndefined()
 
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /wide blocked/ }))?.text).toContain('wide blocked 2')
-  await ui.unmount()
+  const status = await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect(status.text).toContain('wide 2')
 })
 
 test('with no key a wide search passes untouched and silently', async ($, on) => {
@@ -433,7 +436,8 @@ test('with no key a step keeps its model, and Claude tokens are still tallied', 
   expect(it.stepped).toEqual(['claude-fable-5-2'])
   expect(it.sent.length).toBe(0)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Fable/ }))?.text).toBe(' · Fable 5.2 in 900 $0.0072 · out 300 $0.01')
+  expect((await ui.find({ type: 'Text', text: /Fable/ }))?.text).toBe('Fable 5.2')
+  expect((await ui.find({ type: 'Text', text: '$0.0072' }))?.text).toBe('$0.0072')
   await ui.unmount()
 })
 
@@ -461,12 +465,16 @@ test('Claude usage is shown per model, in then out, and unused models are not', 
   await $.turn.complete(finished('t4', 'claude-fable-5-2', 0, 250))
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  const band = (await ui.find({ type: 'Text', text: /Fable/ }))?.text
-  expect(band).toContain(
-    'Fable 5.2 in 2.0k $0.02 · out 1.3k $0.05 · Sonnet 5.5 in 3.0k $0.0060 · out 500 $0.0050 · JEV',
-  )
-  expect(band).not.toContain('Haiku')
+  expect((await ui.find({ type: 'Text', text: /^Fable/ }))?.props.weight).toBe('semibold')
+  expect(await ui.find({ type: 'Text', text: /Haiku/ })).toBeUndefined()
   await ui.unmount()
+
+  const status = await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect((status.text ?? "").split('\n').slice(1, 4)).toEqual([
+    'Fable 5.2   in 2.0k   $0.02   out 1.3k $0.05',
+    'Sonnet 5.5  in 3.0k $0.0060   out  500 $0.0050',
+    'JEV         0 tok $0.0000',
+  ])
 })
 
 test('a commit whose message names env reads and secret files is not blocked', async ($, on) => {
@@ -511,5 +519,5 @@ test('subagents get a tier and a Haiku brief, and wait when they depend on runni
 
   // Each Haiku brief (50 in, 20 out) is Claude spend, filed under Haiku.
   const status = await $.command.run({ command: 'jev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
-  expect(status.text).toContain('Haiku 5.5 in 100 $0.0000 · out 40 $0.0000')
+  expect(status.text).toContain('Haiku 5.5  in 100 $0.0000   out 40 $0.0000')
 })

@@ -4,7 +4,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { JevError, Ledger, Probability, WorkContext } from '../types'
-import { segmentsOf, textOf } from '../hooks/band'
+import { rowsOf, textOf } from '../hooks/band'
 import { decodeDecided } from '../hooks/boundary'
 import {
   DEFAULT_BAND,
@@ -618,7 +618,12 @@ test('a deny is counted because it is a deny, and only while active', () => {
   } as const
   const widened = applyDecision(counted, wide)
   expect(widened.kind === 'active' && widened.blocks).toEqual({ credential: 0, irrelevant: 2, wide: 1 })
-  expect(textOf(viewOf(widened))).toContain('creds blocked 0 · irrelevant blocked 2 · wide blocked 1')
+  expect(textOf(viewOf(widened))).toContain('blocked  creds 0 · off-task 2 · wide 1')
+  // A count is drawn in the warning color only once something was blocked.
+  const tones = Object.fromEntries(
+    (rowsOf(viewOf(widened))[0] ?? []).map((segment, at, row) => [row[at - 1]?.text ?? '', segment.tone]),
+  )
+  expect([tones['creds '], tones['off-task '], tones['wide ']]).toEqual(['quiet', 'warn', 'warn'])
   expect(applyDecision(INITIAL, deny)).toEqual(INITIAL)
 })
 
@@ -626,11 +631,11 @@ test('the band shows the red indicator only when dormant, the counters only when
   const dormant = viewOf(INITIAL)
   const active = viewOf(wake(INITIAL))
 
-  expect(segmentsOf(dormant).map(segment => segment.tone)).toContain('alarm')
-  expect(textOf(dormant)).toBe('● OPENROUTER_API_KEY missing: JEV routing and guards are off')
-  expect(segmentsOf(active).map(segment => segment.tone)).not.toContain('alarm')
-  // Nothing spent yet: no Claude line at all, and Jev as before.
-  expect(textOf(active)).toBe('● JEV · creds blocked 0 · irrelevant blocked 0 · wide blocked 0 · JEV 0 tok $0.0000')
+  expect(rowsOf(dormant).flat().map(segment => segment.tone)).toContain('alarm')
+  expect(textOf(dormant)).toBe('● OPENROUTER_API_KEY missing · JEV routing and guards are off')
+  expect(rowsOf(active).flat().map(segment => segment.tone)).not.toContain('alarm')
+  // Nothing spent yet: no Claude row at all, and Jev's own.
+  expect(textOf(active)).toBe('● JEV  blocked  creds 0 · off-task 0 · wide 0\nJEV  0 tok $0.0000')
 })
 
 const used = (fresh: number, cacheRead: number, cacheWrite: number, output: number) =>
@@ -697,15 +702,22 @@ test('usage is kept per model, in the order models were first used', () => {
   expect(active.claude.map(spend => spend.model)).toEqual(['claude-fable-5-2', 'claude-sonnet-5-5', 'claude-haiku-5-5'])
   expect(active.claude[0]?.usage.output).toBe(20_000)
 
-  // A model with nothing spent is not shown; each line is in $, in, out, out $.
-  const lines = 'Fable 5.2 in 1.01M $0.31 · out 20.0k $0.80 · Sonnet 5.5 in 500 $0.0010 · out 100 $0.0010'
-  expect(textOf(viewOf(active))).toBe(
-    `● JEV · creds blocked 0 · irrelevant blocked 0 · wide blocked 0 · ${lines} · JEV 0 tok $0.0000`,
-  )
-  expect(textOf(viewOf(dormant))).toBe(
-    `● OPENROUTER_API_KEY missing: JEV routing and guards are off · ${lines}`,
-  )
+  // A model with nothing spent is not shown; each row is in, in $, out, out $,
+  // its columns lined up with the other models' and its name with Jev's.
+  const rows = [
+    'Fable 5.2   in 1.01M   $0.31   out 20.0k $0.80',
+    'Sonnet 5.5  in   500 $0.0010   out   100 $0.0010',
+  ]
+  expect(textOf(viewOf(active)).split('\n')).toEqual([
+    '● JEV  blocked  creds 0 · off-task 0 · wide 0',
+    ...rows,
+    'JEV         0 tok $0.0000',
+  ])
+  expect(textOf(viewOf(dormant)).split('\n')).toEqual([
+    '● OPENROUTER_API_KEY missing · JEV routing and guards are off',
+    ...rows,
+  ])
   expect(textOf(viewOf(addClaude(INITIAL, 'claude-next-9', used(10, 0, 0, 2))))).toContain(
-    'claude-next-9 in 10 cost n/a · out 2 cost n/a',
+    'claude-next-9  in 10 n/a   out 2 n/a',
   )
 })
